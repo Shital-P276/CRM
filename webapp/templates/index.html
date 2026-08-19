@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Customer Tracker</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <div id="login-view" class="view hidden">
+    <form id="login-form" class="login-card">
+      <div class="ledger-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <h1 class="wordmark">Customer Tracker</h1>
+      <p class="sub">Sign in to manage customer records.</p>
+      <label for="login-password">Password</label>
+      <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+      <button type="submit" id="btn-login" class="btn btn-primary btn-block">Sign in</button>
+      <p id="login-error" class="login-error" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="app-view" class="view hidden">
+    <header class="topbar">
+      <nav class="topbar-actions" aria-label="Workbook actions">
+        <button id="btn-backups" class="util-link">Backups</button>
+        <button id="btn-download" class="util-link">Download</button>
+        <button id="btn-upload" class="util-link">Upload</button>
+        <button id="btn-formulas" class="util-link">Formulas</button>
+      </nav>
+      <button id="btn-logout" class="util-link">Logout</button>
+    </header>
+
+    <div class="toolbar">
+      <div class="toolbar-row">
+        <div class="field-group">
+          <label class="field-label" for="wb-select">Workbook</label>
+          <select id="wb-select" aria-label="Workbook"></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="sheet-select">Sheet</label>
+          <div class="inline-pair">
+            <select id="sheet-select" aria-label="Sheet"></select>
+            <button id="btn-add-sheet" class="btn btn-quiet btn-icon" title="Add a sheet" aria-label="Add sheet">+</button>
+          </div>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="append-select">New records go to</label>
+          <select id="append-select" aria-label="Append direction" title="Where new records are added">
+            <option value="bottom">Bottom</option>
+            <option value="top">Top</option>
+          </select>
+        </div>
+        <div class="field-group grow">
+          <label class="field-label" for="search-input">Search</label>
+          <input type="search" id="search-input" placeholder="Search this sheet…" aria-label="Search">
+        </div>
+      </div>
+
+      <div class="toolbar-row actions-row">
+        <button id="btn-add" class="btn btn-primary">+ Add Record</button>
+        <button id="btn-flag" class="btn" title="Flag selected rows">Flag</button>
+        <button id="btn-delete" class="btn btn-danger-outline" title="Delete selected rows">Delete</button>
+        <label class="flagged-filter">
+          <input type="checkbox" id="flagged-only">
+          <span>Flagged only</span>
+        </label>
+      </div>
+    </div>
+
+    <div id="warnings-banner" class="banner hidden"></div>
+
+    <div class="table-wrap">
+      <table id="data-table">
+        <thead id="table-head"></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
