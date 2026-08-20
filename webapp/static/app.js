@@ -900,10 +900,10 @@ async function openFormatModal() {
 
   openModal(`
     <h2>Format — ${escapeHtml(state.sheet)}</h2>
-    <p class="modal-sub">Formulas apply to every new row added to this sheet. Column letters are shown next to each name — use them like =D2*1.18.</p>
 
     <details class="format-section">
       <summary>Formulas</summary>
+      <p class="modal-sub">Formulas apply to every new row added to this sheet. Column letters are shown next to each name — use them like =D2*1.18.</p>
       <div class="modal-grid">${formulaRows}</div>
       <div class="modal-field" style="margin-top:16px;">
         <label>Add a new column</label>
