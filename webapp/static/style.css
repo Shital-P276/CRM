@@ -533,6 +533,21 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
 .dup-col-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
 .dup-col-list label { display: flex; align-items: center; gap: 7px; font-size: 13.5px; cursor: pointer; }
 
+.totals-col-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.totals-col-row { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.totals-col-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.totals-col-row select { min-height: 32px; flex: 0 0 150px; }
+
+#data-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  font-weight: 700;
+  background: var(--panel-alt);
+  border-top: 2px solid var(--line);
+}
+#data-table tfoot td.numeric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
 .sheet-col-row,
 .manage-col-row {
   display: flex;
@@ -546,13 +561,10 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
 
 .manage-col-name { flex: 1 1 0; font-size: 13.5px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .manage-col-type {
-  flex: 0 0 74px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .05em;
-  text-transform: uppercase;
-  color: var(--muted);
-  text-align: right;
+  flex: 0 0 92px;
+  min-height: 30px;
+  font-size: 12.5px;
+  padding: 0 4px;
 }
 .manage-col-row .btn { min-height: 30px; padding: 0 10px; flex: 0 0 auto; }
 .manage-col-row input[type="text"] { min-height: 30px; flex: 1 1 0; }

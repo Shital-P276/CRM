@@ -16,6 +16,7 @@ const state = {
   search: "",
   flaggedOnly: false,
   selected: new Set(),
+  totals: {},
 };
 
 const el = (id) => document.getElementById(id);
@@ -23,6 +24,7 @@ const loginView = el("login-view");
 const appView = el("app-view");
 const tableHead = el("table-head");
 const tableBody = el("table-body");
+const tableFoot = el("table-foot");
 const modalRoot = el("modal-root");
 const toastRoot = el("toast-root");
 const warningsBanner = el("warnings-banner");
@@ -319,7 +321,9 @@ async function loadSheetData() {
   state.formulaCols = new Set(data.formula_cols || []);
   state.numericCols = new Set(data.numeric_cols || []);
   state.dateCols = new Set(data.date_cols || []);
+  state.amountCols = new Set(data.amount_cols || []);
   state.appendDirection = data.append_direction || state.appendDirection;
+  state.totals = data.totals || {};
   state.selected.clear();
   renderWarnings(data.warnings || []);
   renderTable();
@@ -347,6 +351,26 @@ function formatDate(value) {
   const month = months[Number(m[2]) - 1];
   if (!month) return value;
   return `${month} ${String(Number(m[3])).padStart(2, "0")}`;
+}
+
+function formatINR(value) {
+  if (value === "" || value == null) return "";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const [int, frac] = String(Math.abs(n)).split(".");
+  const last3 = int.slice(-3);
+  let rest = int.slice(0, -3);
+  let grouped = last3;
+  if (rest) {
+    const parts = [];
+    while (rest.length > 2) {
+      parts.unshift(rest.slice(-2));
+      rest = rest.slice(0, -2);
+    }
+    parts.unshift(rest);
+    grouped = parts.join(",") + "," + last3;
+  }
+  return (n < 0 ? "-" : "") + grouped + (frac !== undefined ? "." + frac : "");
 }
 
 function escapeHtml(str) {
@@ -445,6 +469,58 @@ function renderTable() {
   renderTableBody();
 }
 
+function renderTableFoot(visible) {
+  tableFoot.innerHTML = "";
+  const activeCols = state.headers.filter(
+    (h) => h !== "FLAGGED" && state.totals[h] && state.totals[h] !== "off"
+  );
+  if (!activeCols.length) return;
+
+  if (!visible) visible = getFilteredSortedRows();
+  const pool = (mode) => {
+    if (mode === "all") return state.rows;
+    if (mode === "flagged") return state.rows.filter((r) => r.flagged);
+    if (mode === "visible") return visible;
+    if (mode === "visible_flagged") return visible.filter((r) => r.flagged);
+    return [];
+  };
+
+  const tr = document.createElement("tr");
+  tr.className = "totals-row";
+  const tdSelect = document.createElement("td");
+  tdSelect.className = "col-select";
+  tr.appendChild(tdSelect);
+  const tdSerial = document.createElement("td");
+  tdSerial.className = "col-serial";
+  tdSerial.textContent = "Totals";
+  tr.appendChild(tdSerial);
+
+  state.headers.forEach((h) => {
+    if (h === "FLAGGED") return;
+    const td = document.createElement("td");
+    const mode = state.totals[h];
+    if (mode && mode !== "off") {
+      const rows = pool(mode);
+      if (state.numericCols.has(h)) {
+        const nums = rows.map((r) => Number(r.values[h])).filter((n) => Number.isFinite(n));
+        if (nums.length) {
+          td.classList.add("numeric");
+          const sum = nums.reduce((a, b) => a + b, 0);
+          td.textContent = state.amountCols.has(h) ? formatINR(sum) : sum.toLocaleString();
+        }
+      } else if (rows.length) {
+        td.textContent = String(rows.length);
+      }
+    }
+    tr.appendChild(td);
+  });
+
+  const tdFlag = document.createElement("td");
+  tdFlag.className = "col-flag";
+  tr.appendChild(tdFlag);
+  tableFoot.appendChild(tr);
+}
+
 function renderTableBody() {
   const rows = getFilteredSortedRows();
   tableBody.innerHTML = "";
@@ -453,6 +529,7 @@ function renderTableBody() {
     renderEmptyBody(
       state.search || state.flaggedOnly ? "No matching records." : "No records yet — add your first one."
     );
+    renderTableFoot(rows);
     return;
   }
 
@@ -486,13 +563,14 @@ function renderTableBody() {
       const isFormula = state.formulaCols.has(h);
       const isNum = state.numericCols.has(h);
       const isDate = state.dateCols.has(h);
+      const isAmount = state.amountCols.has(h);
       if (isNum) td.classList.add("numeric");
       if (isFormula) {
         td.classList.add("formula");
-        td.textContent = row.values[h] ?? "";
+        td.textContent = isAmount ? formatINR(row.values[h]) : (row.values[h] ?? "");
       } else {
         td.classList.add("editable");
-        td.textContent = isDate ? formatDate(row.values[h]) : (row.values[h] ?? "");
+        td.textContent = isDate ? formatDate(row.values[h]) : isAmount ? formatINR(row.values[h]) : (row.values[h] ?? "");
         td.title = "Click to edit";
         td.addEventListener("click", () => editCell(td, row, h, isDate));
       }
@@ -511,6 +589,8 @@ function renderTableBody() {
 
     tableBody.appendChild(tr);
   });
+
+  renderTableFoot(rows);
 }
 
 function renderEmptyBody(message) {
@@ -527,6 +607,7 @@ function renderEmptyBody(message) {
 function renderEmptyTable(message) {
   tableHead.innerHTML = "";
   renderEmptyBody(message);
+  renderTableFoot([]);
 }
 
 // ---------------- Inline cell edit ----------------
@@ -671,13 +752,13 @@ el("search-input").addEventListener("input", (e) => {
   const value = e.target.value;
   searchTimer = setTimeout(() => {
     state.search = value;
-    renderTableBody();
+    renderTable();
   }, 300);
 });
 
 el("flagged-only").addEventListener("change", (e) => {
   state.flaggedOnly = e.target.checked;
-  renderTableBody();
+  renderTable();
 });
 
 // ---------------- Add record modal ----------------
@@ -884,16 +965,36 @@ async function openFormatModal() {
       <span>${escapeHtml(h)}</span>
     </label>`).join("");
 
-  const typeLabel = (h) =>
-    state.formulaCols.has(h) ? "formula"
+  const totalsRows = columnHeaders.map((h) => {
+    const mode = (settingsData.totals || {})[h] || "off";
+    return `
+      <label class="totals-col-row">
+        <span class="totals-col-name">${escapeHtml(h)}</span>
+        <select data-total-col="${escapeHtml(h)}" aria-label="Totals for ${escapeHtml(h)}">
+          <option value="off" ${mode === "off" ? "selected" : ""}>Off</option>
+          <option value="all" ${mode === "all" ? "selected" : ""}>All rows</option>
+          <option value="visible" ${mode === "visible" ? "selected" : ""}>Visible</option>
+          <option value="flagged" ${mode === "flagged" ? "selected" : ""}>Flagged</option>
+          <option value="visible_flagged" ${mode === "visible_flagged" ? "selected" : ""}>Visible + Flagged</option>
+        </select>
+      </label>`;
+  }).join("");
+
+  const declaredType = (h) =>
+    state.amountCols.has(h) ? "amount"
       : state.dateCols.has(h) ? "date"
       : state.numericCols.has(h) ? "number"
       : "text";
 
+  const typeOptions = (current) =>
+    ["text", "number", "date", "amount"]
+      .map((t) => `<option value="${t}"${t === current ? " selected" : ""}>${t[0].toUpperCase()}${t.slice(1)}</option>`)
+      .join("");
+
   const manageRows = columnHeaders.map((h) => `
     <div class="manage-col-row" data-col="${escapeHtml(h)}">
       <span class="manage-col-name">${escapeHtml(h)}</span>
-      <span class="manage-col-type">${escapeHtml(typeLabel(h))}</span>
+      <select class="manage-col-type" aria-label="Type of ${escapeHtml(h)}">${typeOptions(declaredType(h))}</select>
       <button type="button" class="btn btn-quiet manage-rename">Rename</button>
       <button type="button" class="btn btn-quiet manage-delete">Delete</button>
     </div>`).join("");
@@ -921,6 +1022,12 @@ async function openFormatModal() {
     </details>
 
     <details class="format-section">
+      <summary>Column totals</summary>
+      <p class="hint">Numeric columns show a sum, other columns show a count. "Visible" respects the current search and flag filter; "Flagged" only counts flagged rows.</p>
+      <div class="totals-col-list">${totalsRows}</div>
+    </details>
+
+    <details class="format-section">
       <summary>Manage columns</summary>
       <p class="hint">Add, rename or delete columns. Deleting a column removes its data from every row — a backup is created first.</p>
       ${manageRows}
@@ -930,6 +1037,7 @@ async function openFormatModal() {
           <option value="text">Text</option>
           <option value="number">Number</option>
           <option value="date">Date</option>
+          <option value="amount">Amount</option>
         </select>
         <button type="button" class="btn" id="manage-add-col">Add</button>
       </div>
@@ -959,6 +1067,29 @@ async function openFormatModal() {
         openFormatModal();
       } catch (err) {
         toast(err.message, "error");
+      }
+    });
+  });
+
+  modalRoot.querySelectorAll(".manage-col-type").forEach((sel) => {
+    const original = sel.value;
+    sel.addEventListener("change", async () => {
+      const col = sel.closest(".manage-col-row").dataset.col;
+      const nextType = sel.value;
+      if (nextType === original) return;
+      sel.disabled = true;
+      try {
+        await api("/api/columns/type", {
+          method: "PUT",
+          body: { wb: state.workbook, sheet: state.sheet, name: col, type: nextType },
+        });
+        toast(`Column "${col}" is now ${nextType[0].toUpperCase()}${nextType.slice(1)}.`, "success");
+        await loadSheetData();
+        openFormatModal();
+      } catch (err) {
+        toast(err.message, "error");
+        sel.value = original;
+        sel.disabled = false;
       }
     });
   });
@@ -1045,6 +1176,11 @@ async function openFormatModal() {
       if (cb.checked) dupSelected.push(cb.dataset.dupCol);
     });
 
+    const totals = {};
+    modalRoot.querySelectorAll("[data-total-col]").forEach((sel) => {
+      if (sel.value !== "off") totals[sel.dataset.totalCol] = sel.value;
+    });
+
     try {
       await api(`/api/formulas?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
         method: "PUT",
@@ -1052,7 +1188,7 @@ async function openFormatModal() {
       });
       await api(`/api/settings?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
         method: "PUT",
-        body: { append_direction: state.appendDirection, duplicate_check_columns: dupSelected },
+        body: { append_direction: state.appendDirection, duplicate_check_columns: dupSelected, totals },
       });
       closeModal();
       toast("Format saved.", "success");

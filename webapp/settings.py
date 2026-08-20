@@ -75,7 +75,7 @@ def all_settings() -> dict:
         return json.loads(json.dumps(_load()))
 
 
-_COLUMN_TYPES = ("text", "number", "date")
+_COLUMN_TYPES = ("text", "number", "date", "amount")
 
 
 def get_column_types(workbook: str, sheet: str) -> dict:
@@ -95,7 +95,7 @@ def set_column_types(workbook: str, sheet: str, columns: dict) -> None:
     if not isinstance(columns, dict) or not all(
         isinstance(name, str) and col_type in _COLUMN_TYPES for name, col_type in columns.items()
     ):
-        raise ValueError("column types must map column names to text|number|date")
+        raise ValueError("column types must map column names to text|number|date|amount")
     with _lock:
         data = _load()
         workbook_settings = data.setdefault(workbook, {})
@@ -132,6 +132,58 @@ def rename_column_type(workbook: str, sheet: str, old_name: str, new_name: str) 
         sheet_map = (by_sheet or {}).get(sheet)
         if sheet_map and old_name in sheet_map:
             sheet_map[new_name] = sheet_map.pop(old_name)
+            _save(data)
+
+
+_TOTALS_MODES = ("off", "all", "visible", "flagged", "visible_flagged")
+
+
+def get_totals(workbook: str, sheet: str) -> dict:
+    """Per-column totals mode for a sheet, e.g. {"Amount": "all"}.
+
+    Modes: off (no total), all (every row), visible (rows matching the
+    current search), flagged (rows with the flag set), visible_flagged
+    (search-visible rows that also have the flag set)."""
+    with _lock:
+        data = _load()
+        workbook_settings = data.get(workbook) or {}
+        configured = (workbook_settings.get("totals_by_sheet") or {}).get(sheet)
+    if not isinstance(configured, dict):
+        return {}
+    return {name: mode for name, mode in configured.items() if mode in _TOTALS_MODES}
+
+
+def set_totals(workbook: str, sheet: str, modes: dict) -> None:
+    if not isinstance(modes, dict) or not all(
+        isinstance(name, str) and mode in _TOTALS_MODES for name, mode in modes.items()
+    ):
+        raise ValueError(f"totals modes must map column names to one of {_TOTALS_MODES}")
+    with _lock:
+        data = _load()
+        workbook_settings = data.setdefault(workbook, {})
+        by_sheet = workbook_settings.setdefault("totals_by_sheet", {})
+        by_sheet[sheet] = dict(modes)
+        _save(data)
+
+
+def set_total(workbook: str, sheet: str, name: str, mode: str) -> None:
+    if not isinstance(name, str) or not name or mode not in _TOTALS_MODES:
+        raise ValueError(f"invalid totals mode: {mode}")
+    with _lock:
+        data = _load()
+        workbook_settings = data.setdefault(workbook, {})
+        by_sheet = workbook_settings.setdefault("totals_by_sheet", {})
+        by_sheet.setdefault(sheet, {})[name] = mode
+        _save(data)
+
+
+def remove_total(workbook: str, sheet: str, name: str) -> None:
+    with _lock:
+        data = _load()
+        by_sheet = (data.get(workbook) or {}).get("totals_by_sheet")
+        sheet_map = (by_sheet or {}).get(sheet)
+        if sheet_map and name in sheet_map:
+            sheet_map.pop(name, None)
             _save(data)
 
 

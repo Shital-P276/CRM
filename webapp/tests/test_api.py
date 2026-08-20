@@ -70,7 +70,7 @@ class ApiTests(unittest.TestCase):
     def test_index_serves_app(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Customer Tracker", response.data)
+        self.assertIn(b"Loan Shoppee", response.data)
         self.assertIn(b"/static/app.js", response.data)
         js = self.client.get("/static/app.js")
         self.assertEqual(js.status_code, 200)
@@ -358,6 +358,42 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.get_json()["duplicate_check_columns"], [])
         self.assertIn("append_direction", response.get_json())
 
+    def test_totals_default_empty(self):
+        get = self.client.get("/api/settings?wb=a.xlsx&sheet=Sheet1")
+        self.assertEqual(get.get_json()["totals"], {})
+        sheet_data = self.client.get("/api/sheet-data?wb=a.xlsx&sheet=Sheet1")
+        self.assertEqual(sheet_data.get_json()["totals"], {})
+
+    def test_totals_roundtrip(self):
+        put = self.client.put(
+            "/api/settings?wb=a.xlsx&sheet=Sheet1",
+            json={"append_direction": "bottom", "totals": {"AMOUNT": "all"}},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(put.status_code, 200)
+        self.assertEqual(put.get_json()["totals"], {"AMOUNT": "all"})
+        get = self.client.get("/api/settings?wb=a.xlsx&sheet=Sheet1").get_json()
+        self.assertEqual(get["totals"], {"AMOUNT": "all"})
+        sheet_data = self.client.get("/api/sheet-data?wb=a.xlsx&sheet=Sheet1").get_json()
+        self.assertEqual(sheet_data["totals"], {"AMOUNT": "all"})
+
+    def test_totals_rejects_unknown_column(self):
+        put = self.client.put(
+            "/api/settings?wb=a.xlsx&sheet=Sheet1",
+            json={"append_direction": "bottom", "totals": {"NOT A COLUMN": "all"}},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(put.status_code, 400)
+        self.assertIn("NOT A COLUMN", put.get_json()["error"])
+
+    def test_totals_rejects_invalid_mode(self):
+        put = self.client.put(
+            "/api/settings?wb=a.xlsx&sheet=Sheet1",
+            json={"append_direction": "bottom", "totals": {"AMOUNT": "sideways"}},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(put.status_code, 400)
+
     def test_last_opened_defaults_null(self):
         response = self.client.get("/api/last-opened")
         self.assertEqual(response.status_code, 200)
@@ -496,6 +532,38 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Phone", post.get_json()["numeric_cols"])
         data = self.client.get("/api/sheet-data?wb=a.xlsx&sheet=Sheet1").get_json()
         self.assertIn("Phone", data["headers"])
+
+    def test_add_amount_column_api(self):
+        post = self.client.post(
+            "/api/columns",
+            json={"wb": "a.xlsx", "sheet": "Sheet1", "name": "Balance", "type": "amount"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(post.status_code, 200)
+        self.assertIn("Balance", post.get_json()["amount_cols"])
+        self.assertIn("Balance", post.get_json()["numeric_cols"])
+        data = self.client.get("/api/sheet-data?wb=a.xlsx&sheet=Sheet1").get_json()
+        self.assertIn("Balance", data["amount_cols"])
+
+    def test_set_column_type_api(self):
+        put = self.client.put(
+            "/api/columns/type",
+            json={"wb": "a.xlsx", "sheet": "Sheet1", "name": "AMOUNT", "type": "amount"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(put.status_code, 200)
+        self.assertIn("AMOUNT", put.get_json()["amount_cols"])
+        self.assertIn("AMOUNT", put.get_json()["numeric_cols"])
+        data = self.client.get("/api/sheet-data?wb=a.xlsx&sheet=Sheet1").get_json()
+        self.assertIn("AMOUNT", data["amount_cols"])
+
+    def test_set_column_type_api_rejects_bad_type(self):
+        put = self.client.put(
+            "/api/columns/type",
+            json={"wb": "a.xlsx", "sheet": "Sheet1", "name": "AMOUNT", "type": "money"},
+            headers={"X-CSRF-Token": self._csrf()},
+        )
+        self.assertEqual(put.status_code, 400)
 
     def test_rename_column_api(self):
         put = self.client.put(

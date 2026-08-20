@@ -299,6 +299,77 @@ class DataLayerTests(unittest.TestCase):
         self.assertEqual(wb["Sheet1"].cell(row=1, column=7).value, "Phone")
         self.assertIsNone(wb["Sheet1"].cell(row=3, column=7).value)
 
+    def test_add_sheet_with_amount_column(self):
+        build_workbook()
+        dl.add_sheet(
+            "t.xlsx", "Sheet2",
+            [{"name": "Balance", "type": "amount"}, {"name": "Renewal", "type": "date"}],
+        )
+        sheet = dl.load_sheet("t.xlsx", "Sheet2")
+        self.assertIn("Balance", sheet.amount_cols)
+        self.assertIn("Balance", sheet.numeric_cols)
+        self.assertIn("Renewal", sheet.date_cols)
+        self.assertEqual(
+            settings.get_column_types("t.xlsx", "Sheet2"),
+            {"Balance": "amount", "Renewal": "date"},
+        )
+
+    def test_add_column_with_amount_type(self):
+        build_workbook(rows={3: {"CUSTOMER NAME": "a"}})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.add_column(sheet, "Balance", "amount")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("Balance", reloaded.amount_cols)
+        self.assertIn("Balance", reloaded.numeric_cols)
+        self.assertEqual(settings.get_column_types("t.xlsx", "Sheet1").get("Balance"), "amount")
+
+    def test_set_column_type_to_amount(self):
+        build_workbook(rows={3: {"AMOUNT": "500"}})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("AMOUNT", sheet.numeric_cols)
+        dl.set_column_type(sheet, "AMOUNT", "amount")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("AMOUNT", reloaded.amount_cols)
+        self.assertIn("AMOUNT", reloaded.numeric_cols)
+        self.assertEqual(settings.get_column_types("t.xlsx", "Sheet1").get("AMOUNT"), "amount")
+
+    def test_set_column_type_to_text_clears_amount(self):
+        build_workbook(rows={3: {"AMOUNT": "500"}})
+        settings.set_column_types("t.xlsx", "Sheet1", {"AMOUNT": "amount"})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("AMOUNT", sheet.amount_cols)
+        dl.set_column_type(sheet, "AMOUNT", "text")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertNotIn("AMOUNT", reloaded.amount_cols)
+        self.assertIn("AMOUNT", reloaded.numeric_cols)
+
+    def test_set_column_type_rejects_bad_type_or_unknown_column(self):
+        build_workbook()
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        with self.assertRaises(dl.SheetError):
+            dl.set_column_type(sheet, "AMOUNT", "money")
+        with self.assertRaises(dl.SheetError):
+            dl.set_column_type(sheet, "NOPE", "number")
+
+    def test_rename_amount_column_preserves_type(self):
+        build_workbook(rows={3: {"AMOUNT": "500"}})
+        settings.set_column_types("t.xlsx", "Sheet1", {"AMOUNT": "amount"})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.rename_column(sheet, "AMOUNT", "AMOUNT TOTAL")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("AMOUNT TOTAL", reloaded.amount_cols)
+        self.assertNotIn("AMOUNT", reloaded.amount_cols)
+        self.assertEqual(settings.get_column_types("t.xlsx", "Sheet1"), {"AMOUNT TOTAL": "amount"})
+
+    def test_delete_amount_column_removes_type(self):
+        build_workbook(rows={3: {"AMOUNT": "500"}})
+        settings.set_column_types("t.xlsx", "Sheet1", {"AMOUNT": "amount"})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.delete_column(sheet, "AMOUNT")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertNotIn("AMOUNT", reloaded.amount_cols)
+        self.assertEqual(settings.get_column_types("t.xlsx", "Sheet1"), {})
+
     def test_delete_column_removes_data_and_shifts(self):
         build_workbook(rows={3: {"DATE": "2026-08-01", "CUSTOMER NAME": "a",
                                   "AMOUNT": "500", "PAID TO": "note"}})

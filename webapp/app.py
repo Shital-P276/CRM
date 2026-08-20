@@ -157,8 +157,10 @@ def create_app() -> Flask:
             "formula_cols": loaded.formula_cols,
             "numeric_cols": loaded.numeric_cols,
             "date_cols": loaded.date_cols,
+            "amount_cols": loaded.amount_cols,
             "has_flagged": loaded.has_flagged,
             "append_direction": settings.get_append_direction(wb),
+            "totals": settings.get_totals(wb, sheet),
             "warnings": loaded.warnings,
         })
 
@@ -261,6 +263,7 @@ def create_app() -> Flask:
                 "headers": loaded.headers,
                 "numeric_cols": loaded.numeric_cols,
                 "date_cols": loaded.date_cols,
+                "amount_cols": loaded.amount_cols,
                 "formula_cols": loaded.formula_cols,
             })
 
@@ -280,6 +283,27 @@ def create_app() -> Flask:
                 "headers": loaded.headers,
                 "numeric_cols": loaded.numeric_cols,
                 "date_cols": loaded.date_cols,
+                "amount_cols": loaded.amount_cols,
+                "formula_cols": loaded.formula_cols,
+            })
+
+    @app.put("/api/columns/type")
+    @login_required
+    def api_set_column_type():
+        data = request.get_json(silent=True) or {}
+        wb, sheet = _body_wb_sheet()
+        name = str(data.get("name", "")).strip()
+        col_type = str(data.get("type", "")).strip()
+        if not name or not col_type:
+            raise data_layer.SheetError("invalid column type request")
+        with data_layer.file_lock(wb):
+            loaded = data_layer.load_sheet(wb, sheet)
+            data_layer.set_column_type(loaded, name, col_type)
+            return jsonify({
+                "headers": loaded.headers,
+                "numeric_cols": loaded.numeric_cols,
+                "date_cols": loaded.date_cols,
+                "amount_cols": loaded.amount_cols,
                 "formula_cols": loaded.formula_cols,
             })
 
@@ -298,6 +322,7 @@ def create_app() -> Flask:
                 "headers": loaded.headers,
                 "numeric_cols": loaded.numeric_cols,
                 "date_cols": loaded.date_cols,
+                "amount_cols": loaded.amount_cols,
                 "formula_cols": loaded.formula_cols,
             })
 
@@ -432,6 +457,7 @@ def create_app() -> Flask:
         sheet = security.safe_sheet_name(request.args.get("sheet", ""))
         if sheet:
             result["duplicate_check_columns"] = settings.get_duplicate_columns(wb, sheet)
+            result["totals"] = settings.get_totals(wb, sheet)
         return jsonify(result)
 
     @app.put("/api/settings")
@@ -453,11 +479,26 @@ def create_app() -> Flask:
                 if col not in headers:
                     raise data_layer.SheetError(f"unknown column: {col}")
             settings.set_duplicate_columns(wb, sheet, dup_cols)
+        totals = data.get("totals")
+        if sheet and totals is not None:
+            if not isinstance(totals, dict) or not all(
+                isinstance(name, str) and isinstance(mode, str) for name, mode in totals.items()
+            ):
+                raise data_layer.SheetError("totals must map column names to a mode string")
+            headers = data_layer.load_sheet(wb, sheet).headers
+            for col in totals:
+                if col not in headers:
+                    raise data_layer.SheetError(f"unknown column: {col}")
+            try:
+                settings.set_totals(wb, sheet, totals)
+            except ValueError as error:
+                raise data_layer.SheetError(str(error))
         direction = str(data.get("append_direction", ""))
         settings.set_append_direction(wb, direction)
         result: dict = {"append_direction": settings.get_append_direction(wb)}
         if sheet:
             result["duplicate_check_columns"] = settings.get_duplicate_columns(wb, sheet)
+            result["totals"] = settings.get_totals(wb, sheet)
         return jsonify(result)
 
     return app

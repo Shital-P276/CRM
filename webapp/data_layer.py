@@ -107,6 +107,7 @@ class Sheet:
         self.formula_cols: list = []
         self.numeric_cols: list = []
         self.date_cols: list = []
+        self.amount_cols: list = []
         self.has_flagged: bool = False
         self.warnings: list = []
         self.header_row: int = EXCEL_HEADER_ROW
@@ -191,6 +192,7 @@ def _classify(ws, df, headers, template_row, first_col, declared_types=None) -> 
     formula_cols = []
     date_cols = []
     numeric_cols = []
+    amount_cols = []
     declared_types = declared_types or {}
     template_row_values = None
     if ws is not None and ws.max_row >= template_row:
@@ -213,10 +215,13 @@ def _classify(ws, df, headers, template_row, first_col, declared_types=None) -> 
         declared_type = declared_types.get(header)
         numeric_count = sum(1 for v in non_empty if _NUMERIC_RE.match(str(v)) is not None)
         if not non_empty:
-            if declared_type == "number":
+            if declared_type in ("number", "amount"):
                 numeric_cols.append(header)
         elif numeric_count / len(non_empty) >= 0.75:
             numeric_cols.append(header)
+
+        if declared_type == "amount":
+            amount_cols.append(header)
 
         header_upper = header.upper()
         date_cells = sum(1 for v in non_empty if _parse_datetime(str(v)) is not None)
@@ -231,7 +236,7 @@ def _classify(ws, df, headers, template_row, first_col, declared_types=None) -> 
         if is_formula:
             formula_cols.append(header)
 
-    return formula_cols, numeric_cols, date_cols
+    return formula_cols, numeric_cols, date_cols, amount_cols
 
 
 def _parse_datetime(value: str):
@@ -285,7 +290,7 @@ def load_sheet(workbook: str, sheet_name: str) -> Sheet:
         df = _build_default_frame()
         sheet.headers = list(_default_columns)
         sheet.orig_types = []
-        sheet.formula_cols, sheet.numeric_cols, sheet.date_cols = [], [], []
+        sheet.formula_cols, sheet.numeric_cols, sheet.date_cols, sheet.amount_cols = [], [], [], []
     else:
         ws = wb_obj[sheet_name]
         sheet.ws = ws
@@ -305,7 +310,7 @@ def load_sheet(workbook: str, sheet_name: str) -> Sheet:
         sheet.headers = [str(h) for h in df.columns]
         sheet.template = _capture_template(ws, sheet.template_row) if has_template else {}
         declared_types = settings.get_column_types(workbook, sheet_name)
-        sheet.formula_cols, sheet.numeric_cols, sheet.date_cols = _classify(
+        sheet.formula_cols, sheet.numeric_cols, sheet.date_cols, sheet.amount_cols = _classify(
             ws, df, sheet.headers, sheet.template_row, first_col, declared_types
         )
         sheet.orig_types = _capture_orig_types(ws, len(df), sheet.data_start_row)
@@ -716,7 +721,7 @@ def _normalize_columns(columns) -> list:
         if name in seen:
             raise SheetError(f"duplicate column: {name}")
         seen.add(name)
-        if col_type not in ("text", "number", "date"):
+        if col_type not in ("text", "number", "date", "amount"):
             raise SheetError(f"invalid column type for {name}: {col_type}")
         result.append((name, col_type))
     return result
@@ -849,19 +854,41 @@ def add_column(sheet: Sheet, header: str, col_type: str) -> None:
         raise SheetError(f"column already exists: {header}")
     if header == config.RESERVED_COLUMN:
         raise SheetError(f"reserved column name: {header}")
-    if col_type not in ("text", "number", "date"):
+    if col_type not in ("text", "number", "date", "amount"):
         raise SheetError(f"invalid column type: {col_type}")
     sheet.headers.append(header)
     sheet.df[header] = ""
     col_abs = sheet.first_col + sheet.header_index(header)
     for row_types in sheet.orig_types:
         row_types[col_abs] = "s"
-    if col_type == "number":
+    if col_type in ("number", "amount"):
         sheet.numeric_cols.append(header)
     elif col_type == "date":
         sheet.date_cols.append(header)
+    if col_type == "amount":
+        sheet.amount_cols.append(header)
     settings.set_column_type(sheet.workbook, sheet.sheet_name, header, col_type)
     _commit(sheet, "ADD_COLUMN", "", f"added column {header} ({col_type})")
+
+
+def set_column_type(sheet: Sheet, header: str, col_type: str) -> None:
+    if header not in sheet.headers:
+        raise SheetError(f"unknown column: {header}")
+    if header == config.RESERVED_COLUMN:
+        raise SheetError("cannot change the type of the flagged column")
+    if col_type not in ("text", "number", "date", "amount"):
+        raise SheetError(f"invalid column type: {col_type}")
+    for kind in (sheet.numeric_cols, sheet.date_cols, sheet.amount_cols):
+        if header in kind:
+            kind.remove(header)
+    if col_type in ("number", "amount"):
+        sheet.numeric_cols.append(header)
+    elif col_type == "date":
+        sheet.date_cols.append(header)
+    if col_type == "amount":
+        sheet.amount_cols.append(header)
+    settings.set_column_type(sheet.workbook, sheet.sheet_name, header, col_type)
+    _commit(sheet, "SET_COLUMN_TYPE", "", f"{header} type -> {col_type}")
 
 
 def delete_column(sheet: Sheet, header: str) -> None:
@@ -879,6 +906,8 @@ def delete_column(sheet: Sheet, header: str) -> None:
         sheet.numeric_cols.remove(header)
     if header in sheet.date_cols:
         sheet.date_cols.remove(header)
+    if header in sheet.amount_cols:
+        sheet.amount_cols.remove(header)
     sheet.template.pop(col_abs, None)
     for row_types in sheet.orig_types:
         shifted = {}
@@ -911,7 +940,7 @@ def rename_column(sheet: Sheet, old_name: str, new_name: str) -> None:
         raise SheetError(f"column already exists: {new_name}")
     sheet.headers[sheet.header_index(old_name)] = new_name
     sheet.df = sheet.df.rename(columns={old_name: new_name})
-    for kind in (sheet.formula_cols, sheet.numeric_cols, sheet.date_cols):
+    for kind in (sheet.formula_cols, sheet.numeric_cols, sheet.date_cols, sheet.amount_cols):
         if old_name in kind:
             kind.remove(old_name)
             kind.append(new_name)

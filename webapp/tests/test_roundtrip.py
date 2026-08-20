@@ -91,7 +91,7 @@ def snapshot(sheet) -> tuple:
         for col, spec in sorted(sheet.template.items())
     )
     rows = tuple(tuple(canon(v) for v in row) for row in sheet.df.values)
-    classes = (tuple(sheet.formula_cols), tuple(sheet.numeric_cols), tuple(sheet.date_cols))
+    classes = (tuple(sheet.formula_cols), tuple(sheet.numeric_cols), tuple(sheet.date_cols), tuple(sheet.amount_cols))
     return (headers, template, rows, classes, sheet.has_flagged)
 
 
