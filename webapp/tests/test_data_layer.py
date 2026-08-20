@@ -1,8 +1,10 @@
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import openpyxl
 import pandas as pd
@@ -158,6 +160,69 @@ class DataLayerTests(unittest.TestCase):
         backup_dir = config.BAK_DIR
         self.assertEqual(len(list(backup_dir.glob("t.xlsx.*.bak"))), 5)
 
+    def test_revert_to_backup_restores_snapshot(self):
+        build_workbook(rows={3: {"CUSTOMER NAME": "a"}})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.add_row(sheet, {"CUSTOMER NAME": "b"})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.add_row(sheet, {"CUSTOMER NAME": "c"})
+
+        backups = dl.list_backups("t.xlsx")
+        self.assertEqual(len(backups), 2)
+        target = backups[1]["filename"]
+
+        dl.revert_to_backup("t.xlsx", target)
+
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertEqual(reloaded.row_count, 2)
+        names = [reloaded.cell_value("CUSTOMER NAME", i) for i in range(reloaded.row_count)]
+        self.assertEqual(names, ["a", "b"])
+
+        after = dl.list_backups("t.xlsx")
+        self.assertEqual(len(after), 3)
+        self.assertNotEqual(after[0]["filename"], target)
+
+        audit = config.AUDIT_LOG.read_text(encoding="utf-8")
+        self.assertIn("REVERT", audit)
+        self.assertIn(target, audit)
+
+    def test_revert_rejects_backup_from_another_workbook(self):
+        build_workbook(rows={3: {"CUSTOMER NAME": "a"}})
+        other_name = "other.xlsx.20260101-000000-000000.bak"
+        config.BAK_DIR.mkdir(parents=True, exist_ok=True)
+        (config.BAK_DIR / other_name).write_bytes(b"x")
+        with self.assertRaises(dl.SheetError):
+            dl.revert_to_backup("t.xlsx", other_name)
+
+    def test_timestamps_are_ist_not_host_clock(self):
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+        try:
+            build_workbook()
+            expected = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+            stamp = dl.local_now_str()
+            self.assertTrue(stamp.endswith(" IST"))
+            stamp_dt = datetime.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")
+            self.assertLess(
+                abs((stamp_dt - expected.replace(tzinfo=None)).total_seconds()), 10
+            )
+
+            sheet = dl.load_sheet("t.xlsx", "Sheet1")
+            dl.add_row(sheet, {"CUSTOMER NAME": "tzcheck"})
+            backup = dl.list_backups("t.xlsx")[0]
+            created = datetime.strptime(backup["created_at"], "%Y-%m-%d %H:%M:%S")
+            self.assertLess(
+                abs((created - expected.replace(tzinfo=None)).total_seconds()), 10
+            )
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+
     def test_audit_log_lines_and_redaction(self):
         build_workbook(rows={3: {"CUSTOMER NAME": "a", "BANK NO.": "111", "ACCOUNT NO.": "222"}})
         sheet = dl.load_sheet("t.xlsx", "Sheet1")
@@ -185,6 +250,81 @@ class DataLayerTests(unittest.TestCase):
         self.assertIn("Sheet2", dl.list_sheets("t.xlsx"))
         with self.assertRaises(dl.SheetError):
             dl.add_sheet("t.xlsx", "Sheet2")
+
+    def test_add_sheet_with_declared_columns(self):
+        build_workbook()
+        dl.add_sheet(
+            "t.xlsx", "Sheet2",
+            [{"name": "Amount", "type": "number"}, {"name": "Renewal", "type": "date"}],
+        )
+        wb = openpyxl.load_workbook(config.DATA_DIR / "t.xlsx", data_only=False)
+        ws = wb["Sheet2"]
+        self.assertEqual(ws.cell(row=1, column=1).value, "Amount")
+        self.assertEqual(ws.cell(row=1, column=2).value, "Renewal")
+        sheet = dl.load_sheet("t.xlsx", "Sheet2")
+        self.assertEqual(sheet.headers, ["Amount", "Renewal"])
+        self.assertIn("Amount", sheet.numeric_cols)
+        self.assertIn("Renewal", sheet.date_cols)
+        self.assertEqual(
+            settings.get_column_types("t.xlsx", "Sheet2"),
+            {"Amount": "number", "Renewal": "date"},
+        )
+
+    def test_add_sheet_default_columns_when_omitted(self):
+        build_workbook()
+        dl.add_sheet("t.xlsx", "Sheet2")
+        wb = openpyxl.load_workbook(config.DATA_DIR / "t.xlsx", data_only=False)
+        self.assertEqual(wb["Sheet2"].cell(row=1, column=1).value, "DATE")
+        self.assertEqual(wb["Sheet2"].cell(row=1, column=2).value, "CUSTOMER NAME")
+
+    def test_declared_types_classify_empty_sheet(self):
+        build_workbook()
+        dl.add_sheet(
+            "t.xlsx", "Empty",
+            [{"name": "Amount", "type": "number"}, {"name": "Renewal", "type": "date"}],
+        )
+        sheet = dl.load_sheet("t.xlsx", "Empty")
+        self.assertEqual(sheet.row_count, 0)
+        self.assertIn("Amount", sheet.numeric_cols)
+        self.assertIn("Renewal", sheet.date_cols)
+
+    def test_add_column_with_type(self):
+        build_workbook(rows={3: {"CUSTOMER NAME": "a"}})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.add_column(sheet, "Phone", "number")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("Phone", reloaded.headers)
+        self.assertIn("Phone", reloaded.numeric_cols)
+        wb = openpyxl.load_workbook(config.DATA_DIR / "t.xlsx", data_only=False)
+        self.assertEqual(wb["Sheet1"].cell(row=1, column=7).value, "Phone")
+        self.assertIsNone(wb["Sheet1"].cell(row=3, column=7).value)
+
+    def test_delete_column_removes_data_and_shifts(self):
+        build_workbook(rows={3: {"DATE": "2026-08-01", "CUSTOMER NAME": "a",
+                                  "AMOUNT": "500", "PAID TO": "note"}})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.delete_column(sheet, "AMOUNT")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertNotIn("AMOUNT", reloaded.headers)
+        self.assertEqual(reloaded.cell_value("CUSTOMER NAME", 0), "a")
+        self.assertEqual(reloaded.cell_value("PAID TO", 0), "note")
+        wb = openpyxl.load_workbook(config.DATA_DIR / "t.xlsx", data_only=False)
+        ws = wb["Sheet1"]
+        self.assertEqual(ws.cell(row=3, column=5).value, "note")
+        self.assertIsNone(ws.cell(row=3, column=4).value)
+
+    def test_rename_column_updates_header_and_types(self):
+        build_workbook(rows={3: {"CUSTOMER NAME": "a"}})
+        settings.set_column_types("t.xlsx", "Sheet1", {"CUSTOMER NAME": "text"})
+        sheet = dl.load_sheet("t.xlsx", "Sheet1")
+        dl.rename_column(sheet, "CUSTOMER NAME", "NAME")
+        reloaded = dl.load_sheet("t.xlsx", "Sheet1")
+        self.assertIn("NAME", reloaded.headers)
+        self.assertNotIn("CUSTOMER NAME", reloaded.headers)
+        self.assertEqual(reloaded.cell_value("NAME", 0), "a")
+        self.assertEqual(settings.get_column_types("t.xlsx", "Sheet1"), {"NAME": "text"})
+        wb = openpyxl.load_workbook(config.DATA_DIR / "t.xlsx", data_only=False)
+        self.assertEqual(wb["Sheet1"].cell(row=1, column=2).value, "NAME")
 
     def test_path_traversal_rejected(self):
         build_workbook()

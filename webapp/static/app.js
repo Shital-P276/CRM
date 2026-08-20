@@ -169,9 +169,15 @@ async function loadWorkbooks() {
     select.appendChild(opt);
   });
   if (data.workbooks && data.workbooks.length) {
-    state.workbook = data.workbooks[0].name;
+    let remembered = null;
+    try { remembered = await api("/api/last-opened"); } catch (_) {}
+    const wbNames = data.workbooks.map((w) => w.name);
+    const rememberedWb = remembered && wbNames.includes(remembered.workbook)
+      ? remembered.workbook
+      : null;
+    state.workbook = rememberedWb || data.workbooks[0].name;
     select.value = state.workbook;
-    await loadSheets();
+    await loadSheets(rememberedWb ? remembered.sheet : null);
   } else {
     renderEmptyTable("No workbooks found. Upload a .xlsx file to get started.");
   }
@@ -180,9 +186,10 @@ async function loadWorkbooks() {
 el("wb-select").addEventListener("change", async (e) => {
   state.workbook = e.target.value;
   await loadSheets();
+  saveLastOpened();
 });
 
-async function loadSheets() {
+async function loadSheets(preferredSheet = null) {
   if (!state.workbook) return;
   const data = await api(`/api/sheets?wb=${encodeURIComponent(state.workbook)}`);
   const select = el("sheet-select");
@@ -195,8 +202,11 @@ async function loadSheets() {
     select.appendChild(opt);
   });
   if (sheets.length) {
-    state.sheet = sheets[0];
-    select.value = state.sheet;
+    const target = preferredSheet && sheets.includes(preferredSheet)
+      ? preferredSheet
+      : sheets[0];
+    state.sheet = target;
+    select.value = target;
     await loadSettings();
     await loadSheetData();
   }
@@ -207,19 +217,84 @@ el("sheet-select").addEventListener("change", async (e) => {
   state.selected.clear();
   await loadSettings();
   await loadSheetData();
+  saveLastOpened();
 });
 
-el("btn-add-sheet").addEventListener("click", async () => {
-  const name = prompt("New sheet name:");
-  if (!name) return;
-  try {
-    await api("/api/sheets", { method: "POST", body: { wb: state.workbook, name } });
-    toast(`Sheet "${name}" added.`, "success");
-    await loadSheets();
-  } catch (err) {
-    toast(err.message, "error");
-  }
-});
+function saveLastOpened() {
+  if (!state.workbook || !state.sheet) return;
+  api("/api/last-opened", {
+    method: "PUT",
+    body: { workbook: state.workbook, sheet: state.sheet },
+  }).catch(() => {});
+}
+
+el("btn-add-sheet").addEventListener("click", openNewSheetModal);
+
+function sheetColRow() {
+  const row = document.createElement("div");
+  row.className = "sheet-col-row";
+  row.innerHTML = `
+    <input class="sheet-col-name" type="text" placeholder="Column name, e.g. AMOUNT">
+    <select class="sheet-col-type" aria-label="Column type">
+      <option value="text">Text</option>
+      <option value="number">Number</option>
+      <option value="date">Date</option>
+    </select>
+    <button type="button" class="btn btn-quiet sheet-col-remove" aria-label="Remove column">×</button>`;
+  row.querySelector(".sheet-col-remove").addEventListener("click", () => row.remove());
+  return row;
+}
+
+async function openNewSheetModal() {
+  openModal(`
+    <h2>Add sheet</h2>
+    <div class="modal-field">
+      <label for="new-sheet-name">Sheet name</label>
+      <input id="new-sheet-name" type="text" placeholder="e.g. January 2026">
+    </div>
+    <div class="modal-field" style="margin-top:14px;">
+      <label>Columns <span class="hint" style="display:inline; margin-left:6px;">optional — defaults to DATE / CUSTOMER NAME</span></label>
+      <div id="new-sheet-cols"></div>
+      <button type="button" class="btn btn-quiet add-sheet-col-btn" id="add-sheet-col">+ Add column</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn btn-primary" id="modal-save-sheet">Create</button>
+    </div>
+  `);
+
+  const colsRoot = el("new-sheet-cols");
+  el("add-sheet-col").addEventListener("click", () => colsRoot.appendChild(sheetColRow()));
+  colsRoot.appendChild(sheetColRow());
+
+  const saveBtn = el("modal-save-sheet");
+  saveBtn.addEventListener("click", async () => {
+    if (saveBtn.disabled) return;
+    const name = el("new-sheet-name").value.trim();
+    if (!name) {
+      toast("Sheet name is required.", "error");
+      return;
+    }
+    const columns = [];
+    colsRoot.querySelectorAll(".sheet-col-row").forEach((row) => {
+      const colName = row.querySelector(".sheet-col-name").value.trim();
+      if (!colName) return;
+      columns.push({ name: colName, type: row.querySelector(".sheet-col-type").value });
+    });
+    saveBtn.disabled = true;
+    try {
+      const body = { wb: state.workbook, name };
+      if (columns.length) body.columns = columns;
+      await api("/api/sheets", { method: "POST", body });
+      closeModal();
+      toast(`Sheet "${name}" added.`, "success");
+      await loadSheets();
+    } catch (err) {
+      toast(err.message, "error");
+      saveBtn.disabled = false;
+    }
+  });
+}
 
 // ---------------- Settings (append direction) ----------------
 
@@ -227,23 +302,10 @@ async function loadSettings() {
   try {
     const data = await api(`/api/settings?wb=${encodeURIComponent(state.workbook)}`);
     state.appendDirection = data.append_direction || "bottom";
-    el("append-select").value = state.appendDirection;
   } catch (_) {
     state.appendDirection = "bottom";
   }
 }
-
-el("append-select").addEventListener("change", async (e) => {
-  state.appendDirection = e.target.value;
-  try {
-    await api(`/api/settings?wb=${encodeURIComponent(state.workbook)}`, {
-      method: "PUT",
-      body: { append_direction: state.appendDirection },
-    });
-  } catch (err) {
-    toast(err.message, "error");
-  }
-});
 
 // ---------------- Sheet data ----------------
 
@@ -279,9 +341,12 @@ function renderWarnings(warnings) {
 
 function formatDate(value) {
   if (!value) return "";
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(value));
+  if (!m) return value;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const month = months[Number(m[2]) - 1];
+  if (!month) return value;
+  return `${month} ${String(Number(m[3])).padStart(2, "0")}`;
 }
 
 function escapeHtml(str) {
@@ -348,6 +413,11 @@ function renderTable() {
   thSelect.appendChild(selectAll);
   trh.appendChild(thSelect);
 
+  const thSerial = document.createElement("th");
+  thSerial.className = "col-serial";
+  thSerial.textContent = "#";
+  trh.appendChild(thSerial);
+
   state.headers.forEach((h) => {
     if (h === "FLAGGED") return;
     const th = document.createElement("th");
@@ -380,13 +450,13 @@ function renderTableBody() {
   tableBody.innerHTML = "";
 
   if (!rows.length) {
-    renderEmptyTable(
+    renderEmptyBody(
       state.search || state.flaggedOnly ? "No matching records." : "No records yet — add your first one."
     );
     return;
   }
 
-  rows.forEach((row) => {
+  rows.forEach((row, rowIndex) => {
     const tr = document.createElement("tr");
     if (row.flagged) tr.classList.add("flagged");
     if (state.selected.has(row.excel_row)) tr.classList.add("selected");
@@ -404,6 +474,11 @@ function renderTableBody() {
     });
     tdSelect.appendChild(cb);
     tr.appendChild(tdSelect);
+
+    const tdSerial = document.createElement("td");
+    tdSerial.className = "col-serial";
+    tdSerial.textContent = String(rowIndex + 1);
+    tr.appendChild(tdSerial);
 
     state.headers.forEach((h) => {
       if (h === "FLAGGED") return;
@@ -438,15 +513,20 @@ function renderTableBody() {
   });
 }
 
-function renderEmptyTable(message) {
-  tableHead.innerHTML = "";
+function renderEmptyBody(message) {
   tableBody.innerHTML = "";
   const tr = document.createElement("tr");
   const td = document.createElement("td");
   td.className = "empty-state";
+  td.colSpan = state.headers.filter((h) => h !== "FLAGGED").length + 2;
   td.innerHTML = `<div class="empty-title">${escapeHtml(message)}</div>`;
   tr.appendChild(td);
   tableBody.appendChild(tr);
+}
+
+function renderEmptyTable(message) {
+  tableHead.innerHTML = "";
+  renderEmptyBody(message);
 }
 
 // ---------------- Inline cell edit ----------------
@@ -535,17 +615,26 @@ async function toggleFlag(row) {
     if (data.flagged_column_added) {
       toast('A "Flagged" column was added to this sheet to remember flags.', "warn");
     }
+    return true;
   } catch (err) {
     toast(err.message, "error");
+    return false;
   }
 }
 
 el("btn-flag").addEventListener("click", async () => {
   if (!state.selected.size) { toast("Select one or more rows first.", "warn"); return; }
   const rowsByExcel = new Map(state.rows.map((r) => [r.excel_row, r]));
+  let allOk = true;
   for (const excelRow of state.selected) {
     const row = rowsByExcel.get(excelRow);
-    if (row) await toggleFlag(row);
+    if (row) {
+      if (!(await toggleFlag(row))) allOk = false;
+    }
+  }
+  if (allOk) {
+    state.selected.clear();
+    renderTableBody();
   }
 });
 
@@ -567,6 +656,7 @@ el("btn-delete").addEventListener("click", async () => {
       });
     }
     toast(`${count} record${count > 1 ? "s" : ""} deleted.`, "success");
+    state.selected.clear();
     await loadSheetData();
   } catch (err) {
     toast(err.message, "error");
@@ -612,19 +702,36 @@ function openAddModal() {
 
   openModal(`
     <h2>Add record</h2>
-    <p class="modal-sub">New records are added to the ${state.appendDirection} of this sheet.</p>
     <div class="modal-grid">${formHtml}</div>
+    <div class="modal-field" style="margin-top:16px;">
+      <label for="add-append">New records go to</label>
+      <select id="add-append" aria-label="Append direction">
+        <option value="bottom"${state.appendDirection === "bottom" ? " selected" : ""}>Bottom</option>
+        <option value="top"${state.appendDirection === "top" ? " selected" : ""}>Top</option>
+      </select>
+    </div>
     <div class="modal-actions">
       <button class="btn" data-close>Cancel</button>
       <button class="btn btn-primary" id="modal-save">Save</button>
     </div>
   `);
 
-  el("modal-save").addEventListener("click", async () => {
+  const addSaveBtn = el("modal-save");
+  addSaveBtn.addEventListener("click", async () => {
+    if (addSaveBtn.disabled) return;
+    addSaveBtn.disabled = true;
     const inputs = modalRoot.querySelectorAll("[data-col]");
     const values = {};
     inputs.forEach((input) => { values[input.dataset.col] = input.value; });
+    const appendDir = el("add-append").value;
     try {
+      if (appendDir !== state.appendDirection) {
+        await api(`/api/settings?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
+          method: "PUT",
+          body: { append_direction: appendDir },
+        });
+        state.appendDirection = appendDir;
+      }
       await api("/api/rows", { method: "POST", body: { wb: state.workbook, sheet: state.sheet, values } });
       closeModal();
       toast("Record added.", "success");
@@ -635,6 +742,7 @@ function openAddModal() {
         await handleDuplicate(err.data, null, values);
       } else {
         toast(err.message, "error");
+        addSaveBtn.disabled = false;
       }
     }
   });
@@ -644,32 +752,76 @@ function cssId(str) {
   return String(str).toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
-// ---------------- Backups ----------------
+// ---------------- Changes (recent save points + raw backups) ----------------
 
-el("btn-backups").addEventListener("click", async () => {
+el("btn-changes").addEventListener("click", openChangesModal);
+
+async function openChangesModal() {
   try {
     const data = await api(`/api/backups?wb=${encodeURIComponent(state.workbook)}`);
     const backups = data.backups || [];
-    const listHtml = backups.length
+    const recentHtml = backups.length
+      ? `<ul class="backup-list">${backups.map((b, i) => `
+          <li class="change-row">
+            <div class="change-info">
+              <div class="change-title">${escapeHtml(b.description || `Version from ${b.created_at}`)}</div>
+              <div class="backup-meta">${escapeHtml(b.created_at || "unknown time")}${i === 0 ? " · newest" : ""}</div>
+            </div>
+            <button type="button" class="btn btn-quiet change-revert" data-filename="${encodeURIComponent(b.filename)}">Revert to this version</button>
+          </li>`).join("")}</ul>`
+      : `<p class="modal-sub">No changes yet — a snapshot is saved automatically every time you make a change.</p>`;
+    const rawHtml = backups.length
       ? `<ul class="backup-list">${backups.map((b) => `
           <li>
             <div>
               <div>${escapeHtml(b.filename)}</div>
-              <div class="backup-meta">${new Date(b.created_at).toLocaleString()} · ${Math.round((b.size_bytes || 0) / 1024)} KB</div>
+              <div class="backup-meta">${escapeHtml(b.created_at || "")} · ${Math.round((b.size_bytes || 0) / 1024)} KB</div>
             </div>
             <a class="btn btn-quiet" href="/api/backups/${encodeURIComponent(b.filename)}/download">Download</a>
           </li>`).join("")}</ul>`
-      : `<p class="modal-sub">No backups yet — one is created automatically every time you save.</p>`;
+      : `<p class="modal-sub">No backup files yet.</p>`;
     openModal(`
-      <h2>Backups</h2>
-      <p class="modal-sub">The last 5 saved versions of this workbook.</p>
-      ${listHtml}
+      <h2>Changes — ${escapeHtml(state.sheet)}</h2>
+      <p class="modal-sub">Recent save points for this workbook. Reverting restores an earlier version — the current version is saved as a new snapshot first.</p>
+      ${recentHtml}
+
+      <details class="format-section">
+        <summary>Raw backup files</summary>
+        <p class="hint">The underlying .bak files, one per save point. Download them directly.</p>
+        ${rawHtml}
+      </details>
+
       <div class="modal-actions"><button class="btn" data-close>Close</button></div>
     `);
+
+    modalRoot.querySelectorAll(".change-revert").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const filename = decodeURIComponent(btn.dataset.filename);
+        const label = btn.closest("li").querySelector(".change-title").textContent;
+        const ok = await confirmDialog(
+          "Revert to this version",
+          `Restore this workbook to "${label}"? The current version is saved as a new snapshot first, so this can be undone.`
+        );
+        if (!ok) return;
+        btn.disabled = true;
+        try {
+          await api(`/api/backups/${encodeURIComponent(filename)}/revert`, {
+            method: "POST",
+            body: { wb: state.workbook },
+          });
+          closeModal();
+          toast("Restored to an earlier version.", "success");
+          await loadSheets();
+        } catch (err) {
+          toast(err.message, "error");
+          btn.disabled = false;
+        }
+      });
+    });
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}
 
 // ---------------- Download / upload ----------------
 
@@ -696,68 +848,227 @@ el("btn-upload").addEventListener("click", () => {
   input.click();
 });
 
-// ---------------- Formulas panel ----------------
-// NOTE: depends on GET/PUT /api/formulas, which does not exist in the
-// backend yet (see handover prompt). Until OpenCode adds it, this shows
-// a clear "not available yet" message instead of failing silently.
+// ---------------- Format panel (formulas + duplicate-check columns) ----------------
 
-el("btn-formulas").addEventListener("click", async () => {
+el("btn-formulas").addEventListener("click", openFormatModal);
+
+async function openFormatModal() {
+  let formulaData, settingsData;
   try {
-    const data = await api(
-      `/api/formulas?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`
-    );
-    const cols = data.formulas || {};
-    const rowsHtml = Object.keys(cols).length
-      ? Object.entries(cols).map(([col, formula]) => `
-          <div class="modal-field">
-            <label for="formula-${cssId(col)}">${escapeHtml(col)}</label>
-            <input id="formula-${cssId(col)}" type="text" data-formula-col="${escapeHtml(col)}"
-                   value="${escapeHtml(formula || "")}" placeholder="e.g. =D2*1.18">
-          </div>`).join("")
-      : `<p class="modal-sub">No formula columns on this sheet yet. Add one below.</p>
-         <div class="modal-field">
-           <label for="formula-new-col">Column name</label>
-           <input id="formula-new-col" type="text" placeholder="e.g. GST TOTAL">
-         </div>
-         <div class="modal-field">
-           <label for="formula-new-value">Formula</label>
-           <input id="formula-new-value" type="text" placeholder="e.g. =D2*1.18">
-         </div>`;
-    openModal(`
-      <h2>Formulas — ${escapeHtml(state.sheet)}</h2>
-      <p class="modal-sub">These apply to every new row added to this sheet. Edit and save to update the template.</p>
-      <div class="modal-grid">${rowsHtml}</div>
-      <div class="modal-actions">
-        <button class="btn" data-close>Cancel</button>
-        <button class="btn btn-primary" id="modal-save-formulas">Save</button>
+    [formulaData, settingsData] = await Promise.all([
+      api(`/api/formulas?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`),
+      api(`/api/settings?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`),
+    ]);
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+
+  const formulas = formulaData.formulas || {}; // {header: {formula, ref}}
+  const dupColumns = new Set(settingsData.duplicate_check_columns || []);
+  const columnHeaders = state.headers.filter((h) => h !== "FLAGGED");
+
+  const formulaRows = columnHeaders.map((h) => {
+    const entry = formulas[h] || { formula: "", ref: "" };
+    return `
+      <div class="modal-field">
+        <label for="formula-${cssId(h)}">${escapeHtml(h)}${entry.ref ? `<span class="ref-badge">${escapeHtml(entry.ref)}</span>` : ""}</label>
+        <input id="formula-${cssId(h)}" type="text" data-formula-col="${escapeHtml(h)}"
+               value="${escapeHtml(entry.formula || "")}" placeholder="e.g. =D2*1.18">
+      </div>`;
+  }).join("");
+
+  const dupRows = columnHeaders.map((h) => `
+    <label>
+      <input type="checkbox" data-dup-col="${escapeHtml(h)}" ${dupColumns.has(h) ? "checked" : ""}>
+      <span>${escapeHtml(h)}</span>
+    </label>`).join("");
+
+  const typeLabel = (h) =>
+    state.formulaCols.has(h) ? "formula"
+      : state.dateCols.has(h) ? "date"
+      : state.numericCols.has(h) ? "number"
+      : "text";
+
+  const manageRows = columnHeaders.map((h) => `
+    <div class="manage-col-row" data-col="${escapeHtml(h)}">
+      <span class="manage-col-name">${escapeHtml(h)}</span>
+      <span class="manage-col-type">${escapeHtml(typeLabel(h))}</span>
+      <button type="button" class="btn btn-quiet manage-rename">Rename</button>
+      <button type="button" class="btn btn-quiet manage-delete">Delete</button>
+    </div>`).join("");
+
+  openModal(`
+    <h2>Format — ${escapeHtml(state.sheet)}</h2>
+    <p class="modal-sub">Formulas apply to every new row added to this sheet. Column letters are shown next to each name — use them like =D2*1.18.</p>
+
+    <details class="format-section">
+      <summary>Formulas</summary>
+      <div class="modal-grid">${formulaRows}</div>
+      <div class="modal-field" style="margin-top:16px;">
+        <label>Add a new column</label>
+        <div class="inline-pair">
+          <input id="format-new-col" type="text" placeholder="Column name, e.g. GST TOTAL">
+          <input id="format-new-formula" type="text" placeholder="Formula, e.g. =D2*1.18">
+        </div>
       </div>
-    `);
-    el("modal-save-formulas").addEventListener("click", async () => {
-      const updates = {};
-      modalRoot.querySelectorAll("[data-formula-col]").forEach((input) => {
-        updates[input.dataset.formulaCol] = input.value;
-      });
-      const newCol = el("formula-new-col");
-      const newVal = el("formula-new-value");
-      if (newCol && newVal && newCol.value && newVal.value) {
-        updates[newCol.value] = newVal.value;
-      }
+    </details>
+
+    <details class="format-section">
+      <summary>Advanced: duplicate detection columns</summary>
+      <p class="hint">Leave all unchecked to use automatic detection based on common field names. Check specific columns to only flag duplicates on those.</p>
+      <div class="dup-col-list">${dupRows}</div>
+    </details>
+
+    <details class="format-section">
+      <summary>Manage columns</summary>
+      <p class="hint">Add, rename or delete columns. Deleting a column removes its data from every row — a backup is created first.</p>
+      ${manageRows}
+      <div class="manage-add">
+        <input id="manage-new-col" type="text" placeholder="New column name">
+        <select id="manage-new-type" aria-label="Column type">
+          <option value="text">Text</option>
+          <option value="number">Number</option>
+          <option value="date">Date</option>
+        </select>
+        <button type="button" class="btn" id="manage-add-col">Add</button>
+      </div>
+    </details>
+
+    <div class="modal-actions">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn btn-primary" id="modal-save-format">Save</button>
+    </div>
+  `);
+
+  modalRoot.querySelectorAll(".manage-delete").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const col = btn.closest(".manage-col-row").dataset.col;
+      const ok = await confirmDialog(
+        "Delete column",
+        `Delete "${col}" and its data from every row? A backup is created first so you can restore it.`
+      );
+      if (!ok) return;
       try {
-        await api(`/api/formulas?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
-          method: "PUT",
-          body: { formulas: updates },
+        await api("/api/columns", {
+          method: "DELETE",
+          body: { wb: state.workbook, sheet: state.sheet, name: col },
         });
-        closeModal();
-        toast("Formulas updated.", "success");
+        toast(`Column "${col}" deleted.`, "success");
         await loadSheetData();
+        openFormatModal();
       } catch (err) {
         toast(err.message, "error");
       }
     });
-  } catch (err) {
-    toast("Formula editing isn't available in this version yet.", "warn");
-  }
-});
+  });
+
+  modalRoot.querySelectorAll(".manage-rename").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest(".manage-col-row");
+      if (row.dataset.editing) return;
+      const col = row.dataset.col;
+      row.dataset.editing = "1";
+      row.innerHTML = `
+        <input type="text" class="manage-rename-input" value="${escapeHtml(col)}">
+        <button type="button" class="btn btn-primary manage-save">Save</button>
+        <button type="button" class="btn btn-quiet manage-cancel">Cancel</button>`;
+      const input = row.querySelector(".manage-rename-input");
+      const saveBtn = row.querySelector(".manage-save");
+      const cancelBtn = row.querySelector(".manage-cancel");
+      input.focus();
+      input.select();
+      cancelBtn.addEventListener("click", () => openFormatModal());
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") saveBtn.click();
+        else if (e.key === "Escape") openFormatModal();
+      });
+      saveBtn.addEventListener("click", async () => {
+        if (saveBtn.disabled) return;
+        const newName = input.value.trim();
+        if (!newName || newName === col) { openFormatModal(); return; }
+        saveBtn.disabled = true;
+        try {
+          await api("/api/columns", {
+            method: "PUT",
+            body: { wb: state.workbook, sheet: state.sheet, name: col, new_name: newName },
+          });
+          toast(`Column renamed to "${newName}".`, "success");
+          await loadSheetData();
+          openFormatModal();
+        } catch (err) {
+          toast(err.message, "error");
+          saveBtn.disabled = false;
+        }
+      });
+    });
+  });
+
+  el("manage-add-col").addEventListener("click", async () => {
+    const addBtn = el("manage-add-col");
+    const name = el("manage-new-col").value.trim();
+    if (!name) {
+      toast("Column name is required.", "error");
+      return;
+    }
+    addBtn.disabled = true;
+    try {
+      await api("/api/columns", {
+        method: "POST",
+        body: { wb: state.workbook, sheet: state.sheet, name, type: el("manage-new-type").value },
+      });
+      toast(`Column "${name}" added.`, "success");
+      await loadSheetData();
+      openFormatModal();
+    } catch (err) {
+      toast(err.message, "error");
+      addBtn.disabled = false;
+    }
+  });
+
+  const formatSaveBtn = el("modal-save-format");
+  formatSaveBtn.addEventListener("click", async () => {
+    if (formatSaveBtn.disabled) return;
+    formatSaveBtn.disabled = true;
+    const formulaUpdates = {};
+    modalRoot.querySelectorAll("[data-formula-col]").forEach((input) => {
+      formulaUpdates[input.dataset.formulaCol] = input.value;
+    });
+    const newCol = el("format-new-col");
+    const newFormula = el("format-new-formula");
+    if (newCol && newFormula && newCol.value.trim() && newFormula.value.trim()) {
+      formulaUpdates[newCol.value.trim()] = newFormula.value.trim();
+    }
+
+    const dupSelected = [];
+    modalRoot.querySelectorAll("[data-dup-col]").forEach((cb) => {
+      if (cb.checked) dupSelected.push(cb.dataset.dupCol);
+    });
+
+    try {
+      await api(`/api/formulas?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
+        method: "PUT",
+        body: { formulas: formulaUpdates },
+      });
+      await api(`/api/settings?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
+        method: "PUT",
+        body: { append_direction: state.appendDirection, duplicate_check_columns: dupSelected },
+      });
+      closeModal();
+      toast("Format saved.", "success");
+      await loadSheetData();
+    } catch (err) {
+      if (err.status === 400 && err.data && err.data.invalid) {
+        const lines = Object.entries(err.data.invalid).map(([col, reason]) => `${col}: ${reason}`).join("; ");
+        toast(`Some formulas couldn't be saved — ${lines}`, "error");
+        formatSaveBtn.disabled = false;
+      } else {
+        toast(err.message, "error");
+        formatSaveBtn.disabled = false;
+      }
+    }
+  });
+}
 
 // ---------------- Modal helpers ----------------
 

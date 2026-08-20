@@ -16,7 +16,7 @@ import data_layer
 import security
 import settings
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["60 per minute"])
+limiter = Limiter(key_func=get_remote_address, default_limits=[config.DEFAULT_RATE_LIMIT])
 
 
 @limiter.limit(lambda: config.LOGIN_RATE_LIMIT)
@@ -242,8 +242,64 @@ def create_app() -> Flask:
         if not sheet:
             raise data_layer.SheetError("invalid sheet name")
         with data_layer.file_lock(wb):
-            data_layer.add_sheet(wb, sheet)
+            data_layer.add_sheet(wb, sheet, data.get("columns"))
             return jsonify({"sheets": data_layer.list_sheets(wb)})
+
+    @app.post("/api/columns")
+    @login_required
+    def api_add_column():
+        data = request.get_json(silent=True) or {}
+        wb, sheet = _body_wb_sheet()
+        name = str(data.get("name", "")).strip()
+        if not name:
+            raise data_layer.SheetError("invalid column name")
+        col_type = str(data.get("type", "text")).strip() or "text"
+        with data_layer.file_lock(wb):
+            loaded = data_layer.load_sheet(wb, sheet)
+            data_layer.add_column(loaded, name, col_type)
+            return jsonify({
+                "headers": loaded.headers,
+                "numeric_cols": loaded.numeric_cols,
+                "date_cols": loaded.date_cols,
+                "formula_cols": loaded.formula_cols,
+            })
+
+    @app.put("/api/columns")
+    @login_required
+    def api_rename_column():
+        data = request.get_json(silent=True) or {}
+        wb, sheet = _body_wb_sheet()
+        old_name = str(data.get("name", "")).strip()
+        new_name = str(data.get("new_name", "")).strip()
+        if not old_name or not new_name:
+            raise data_layer.SheetError("invalid column name")
+        with data_layer.file_lock(wb):
+            loaded = data_layer.load_sheet(wb, sheet)
+            data_layer.rename_column(loaded, old_name, new_name)
+            return jsonify({
+                "headers": loaded.headers,
+                "numeric_cols": loaded.numeric_cols,
+                "date_cols": loaded.date_cols,
+                "formula_cols": loaded.formula_cols,
+            })
+
+    @app.delete("/api/columns")
+    @login_required
+    def api_delete_column():
+        data = request.get_json(silent=True) or {}
+        wb, sheet = _body_wb_sheet()
+        name = str(data.get("name", "")).strip()
+        if not name:
+            raise data_layer.SheetError("invalid column name")
+        with data_layer.file_lock(wb):
+            loaded = data_layer.load_sheet(wb, sheet)
+            data_layer.delete_column(loaded, name)
+            return jsonify({
+                "headers": loaded.headers,
+                "numeric_cols": loaded.numeric_cols,
+                "date_cols": loaded.date_cols,
+                "formula_cols": loaded.formula_cols,
+            })
 
     @app.post("/api/upload")
     @login_required
@@ -302,24 +358,107 @@ def create_app() -> Flask:
         return send_file(path, as_attachment=True, download_name=filename,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    @app.post("/api/backups/<filename>/revert")
+    @login_required
+    def api_backup_revert(filename):
+        data = request.get_json(silent=True) or {}
+        wb = security.safe_workbook_name(data.get("wb", ""))
+        if not wb:
+            raise data_layer.SheetError("invalid workbook name")
+        with data_layer.file_lock(wb):
+            data_layer.revert_to_backup(wb, filename)
+            return jsonify({"backups": data_layer.list_backups(wb)})
+
+    @app.get("/api/formulas")
+    @login_required
+    def api_get_formulas():
+        wb, sheet = require_wb_sheet()
+        loaded = data_layer.load_sheet(wb, sheet)
+        return jsonify({"formulas": data_layer.template_formulas(loaded)})
+
+    @app.put("/api/formulas")
+    @login_required
+    def api_put_formulas():
+        wb, sheet = require_wb_sheet()
+        data = request.get_json(silent=True) or {}
+        with data_layer.file_lock(wb):
+            loaded = data_layer.load_sheet(wb, sheet)
+            try:
+                result = data_layer.update_formulas(loaded, data.get("formulas") or {})
+            except data_layer.FormulaValidationError as error:
+                return jsonify({
+                    "error": "invalid formula",
+                    "invalid": error.errors,
+                    "code": 400,
+                }), 400
+        return jsonify(result)
+
+    @app.get("/api/last-opened")
+    @login_required
+    def api_get_last_opened():
+        remembered = settings.get_last_opened()
+        wb = remembered.get("workbook")
+        sheet = remembered.get("sheet")
+        if not wb:
+            return jsonify({"workbook": None, "sheet": None})
+        if wb not in [w["name"] for w in data_layer.list_workbooks()]:
+            return jsonify({"workbook": None, "sheet": None})
+        try:
+            sheets = data_layer.list_sheets(wb)
+        except data_layer.SheetError:
+            return jsonify({"workbook": None, "sheet": None})
+        if sheet not in sheets:
+            sheet = None
+        return jsonify({"workbook": wb, "sheet": sheet})
+
+    @app.put("/api/last-opened")
+    @login_required
+    def api_put_last_opened():
+        data = request.get_json(silent=True) or {}
+        wb = security.safe_workbook_name(data.get("workbook", ""))
+        sheet = security.safe_sheet_name(data.get("sheet", ""))
+        if not wb or not sheet:
+            raise data_layer.SheetError("invalid workbook or sheet name")
+        settings.set_last_opened(wb, sheet)
+        return jsonify(settings.get_last_opened())
+
     @app.get("/api/settings")
     @login_required
     def api_get_settings():
         wb = security.safe_workbook_name(request.args.get("wb", ""))
         if not wb:
             raise data_layer.SheetError("invalid workbook name")
-        return jsonify({"append_direction": settings.get_append_direction(wb)})
+        result: dict = {"append_direction": settings.get_append_direction(wb)}
+        sheet = security.safe_sheet_name(request.args.get("sheet", ""))
+        if sheet:
+            result["duplicate_check_columns"] = settings.get_duplicate_columns(wb, sheet)
+        return jsonify(result)
 
     @app.put("/api/settings")
     @login_required
     def api_put_settings():
         data = request.get_json(silent=True) or {}
-        wb = security.safe_workbook_name(data.get("wb", ""))
+        wb = security.safe_workbook_name(request.args.get("wb") or data.get("wb", ""))
         if not wb:
             raise data_layer.SheetError("invalid workbook name")
+        sheet = security.safe_sheet_name(request.args.get("sheet") or data.get("sheet", ""))
+        dup_cols = data.get("duplicate_check_columns")
+        if sheet and dup_cols is not None:
+            if not isinstance(dup_cols, list) or not all(isinstance(c, str) for c in dup_cols):
+                raise data_layer.SheetError(
+                    "duplicate_check_columns must be a list of column names"
+                )
+            headers = data_layer.load_sheet(wb, sheet).headers
+            for col in dup_cols:
+                if col not in headers:
+                    raise data_layer.SheetError(f"unknown column: {col}")
+            settings.set_duplicate_columns(wb, sheet, dup_cols)
         direction = str(data.get("append_direction", ""))
         settings.set_append_direction(wb, direction)
-        return jsonify({"append_direction": settings.get_append_direction(wb)})
+        result: dict = {"append_direction": settings.get_append_direction(wb)}
+        if sheet:
+            result["duplicate_check_columns"] = settings.get_duplicate_columns(wb, sheet)
+        return jsonify(result)
 
     return app
 

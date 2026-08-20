@@ -3,16 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Customer Tracker</title>
+  <title>LoanShoppee</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
   <div id="login-view" class="view hidden">
     <form id="login-form" class="login-card">
-      <div class="ledger-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-      <h1 class="wordmark">Customer Tracker</h1>
-      <p class="sub">Sign in to manage customer records.</p>
+      <div class="login-wordmark" aria-hidden="true">
+        <span class="login-wordmark-loan">Loan</span>
+        <span class="login-wordmark-shoppee">SHOPPEE</span>
+      </div>
+      <div class="login-greeting">
+        <h1 class="wordmark">Welcome, Manoj</h1>
+        <p class="sub">Sign in to continue.</p>
+      </div>
       <label for="login-password">Password</label>
       <input type="password" id="login-password" name="password" autocomplete="current-password" required>
       <button type="submit" id="btn-login" class="btn btn-primary btn-block">Sign in</button>
@@ -22,13 +27,19 @@
 
   <div id="app-view" class="view hidden">
     <header class="topbar">
-      <nav class="topbar-actions" aria-label="Workbook actions">
-        <button id="btn-backups" class="util-link">Backups</button>
-        <button id="btn-download" class="util-link">Download</button>
-        <button id="btn-upload" class="util-link">Upload</button>
-        <button id="btn-formulas" class="util-link">Formulas</button>
-      </nav>
-      <button id="btn-logout" class="util-link">Logout</button>
+      <div class="brand-mark">
+        <span class="brand-loan">Loan</span><span class="brand-shoppee">Shoppee</span>
+      </div>
+      <div class="topbar-right">
+        <nav class="topbar-actions" aria-label="Workbook actions">
+          <button id="btn-formulas" class="util-link">Format</button>
+          <button id="btn-changes" class="util-link">Changes</button>
+          <button id="btn-download" class="util-link">Download</button>
+          <button id="btn-upload" class="util-link">Upload</button>
+        </nav>
+        <span class="topbar-divider" aria-hidden="true"></span>
+        <button id="btn-logout" class="util-link util-link-danger">Logout</button>
+      </div>
     </header>
 
     <div class="toolbar">
@@ -44,27 +55,19 @@
             <button id="btn-add-sheet" class="btn btn-quiet btn-icon" title="Add a sheet" aria-label="Add sheet">+</button>
           </div>
         </div>
-        <div class="field-group">
-          <label class="field-label" for="append-select">New records go to</label>
-          <select id="append-select" aria-label="Append direction" title="Where new records are added">
-            <option value="bottom">Bottom</option>
-            <option value="top">Top</option>
-          </select>
-        </div>
         <div class="field-group grow">
           <label class="field-label" for="search-input">Search</label>
           <input type="search" id="search-input" placeholder="Search this sheet…" aria-label="Search">
         </div>
-      </div>
-
-      <div class="toolbar-row actions-row">
-        <button id="btn-add" class="btn btn-primary">+ Add Record</button>
-        <button id="btn-flag" class="btn" title="Flag selected rows">Flag</button>
-        <button id="btn-delete" class="btn btn-danger-outline" title="Delete selected rows">Delete</button>
         <label class="flagged-filter">
           <input type="checkbox" id="flagged-only">
           <span>Flagged only</span>
         </label>
+        <div class="action-window" role="group" aria-label="Row actions">
+          <button id="btn-add" class="btn btn-primary">+ Add Record</button>
+          <button id="btn-flag" class="btn" title="Flag selected rows">Flag</button>
+          <button id="btn-delete" class="btn btn-danger-outline" title="Delete selected rows">Delete</button>
+        </div>
       </div>
     </div>
 

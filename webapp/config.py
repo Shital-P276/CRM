@@ -17,6 +17,7 @@ SESSION_COOKIE_NAME = "ct_session"
 LOGIN_RATE_LIMIT_BURST = os.environ.get("LOGIN_RATE_LIMIT_BURST", "10 per 15 minutes")
 LOGIN_RATE_LIMIT_SUSTAINED = os.environ.get("LOGIN_RATE_LIMIT_SUSTAINED", "20 per hour")
 LOGIN_RATE_LIMIT = f"{LOGIN_RATE_LIMIT_BURST};{LOGIN_RATE_LIMIT_SUSTAINED}"
+DEFAULT_RATE_LIMIT = os.environ.get("DEFAULT_RATE_LIMIT", "60 per minute")
 
 BACKUP_KEEP = 5
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
@@ -27,13 +28,15 @@ RESERVED_COLUMN = "FLAGGED"
 
 BANK_ACCOUNT_KEYWORDS = ("BANK", "ACCOUNT")
 
+TIMEZONE = os.environ.get("TIMEZONE", "Asia/Kolkata")
+
 
 def env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
 def get_timezone_name() -> str:
-    return env("TIMEZONE", "Asia/Kolkata")
+    return TIMEZONE
 
 
 def get_secret_key() -> str:

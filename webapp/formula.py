@@ -1,4 +1,5 @@
 import ast
+import copy
 import io
 import os
 import re
@@ -41,7 +42,7 @@ def compute_formula_values(sheet, row_values, insert_mode, new_excel_row):
     translated = {}
     for header in formula_cols:
         col_idx = sheet.header_index(header)
-        template = sheet.template.get(col_idx + 1, {}).get("value")
+        template = sheet.template.get(sheet.first_col + col_idx, {}).get("value")
         if isinstance(template, str) and template.startswith("="):
             translated[header] = _translate_row_refs(sheet, template, new_excel_row)
 
@@ -72,6 +73,73 @@ def compute_formula_values(sheet, row_values, insert_mode, new_excel_row):
             warnings.append(f"{header}: formula could not be calculated")
 
     return result, warnings
+
+
+def _sample_values(sheet) -> dict:
+    sample = {h: "" for h in sheet.headers}
+    if len(sheet.df) == 0:
+        return sample
+    last = sheet.df.iloc[-1]
+    for header in sheet.headers:
+        if header not in last.index:
+            continue
+        raw = last[header]
+        sample[header] = "" if pd.isna(raw) else str(raw)
+    return sample
+
+
+def _probe_with_column(sheet, header):
+    """Return (probe_sheet, tmp_path) for validating a formula whose column
+    does not yet exist in the on-disk workbook. The probe writes the extra
+    header into a throwaway copy so Tier 1 can evaluate it."""
+    probe = copy.copy(sheet)
+    probe.headers = list(sheet.headers) + [header]
+    probe.template = dict(sheet.template)
+
+    wb = openpyxl.load_workbook(sheet.path, data_only=False)
+    ws = wb[sheet.sheet_name]
+    col_idx = probe.header_index(header)
+    ws.cell(row=probe.header_row, column=probe.first_col + col_idx, value=header)
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        wb.save(tmp.name)
+        tmp_path = tmp.name
+    probe.path = tmp_path
+    return probe, tmp_path
+
+
+def validate_formula(sheet, header, formula_text) -> tuple:
+    """Return (ok, reason). A formula is acceptable when it can be parsed and
+    evaluated by the same safety path used for computing values — Tier 1
+    (formulas lib) or Tier 2 (AST whitelist)."""
+    formula = str(formula_text).strip()
+    if not formula.startswith("="):
+        return False, "formula must start with '='"
+
+    probe = sheet
+    tmp_path = None
+    if header not in sheet.headers:
+        probe, tmp_path = _probe_with_column(sheet, header)
+
+    try:
+        translated = _translate_row_refs(probe, formula, probe.data_start_row)
+        if _has_invalid_refs(translated, probe):
+            return False, "formula references a missing column"
+
+        sample = _sample_values(probe)
+        tier1 = _tier1(probe, sample, {header: translated}, [header], "edit", probe.data_start_row)
+        if tier1 is not None:
+            return True, ""
+        value = _tier2(probe, sample, translated, probe.data_start_row, "edit")
+        if value is not None:
+            return True, ""
+        return False, "formula could not be parsed or evaluated"
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _has_invalid_refs(formula: str, sheet) -> bool:

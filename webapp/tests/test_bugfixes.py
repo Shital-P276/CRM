@@ -11,6 +11,7 @@ os.environ["SECRET_KEY"] = "test-secret-key"
 os.environ["PASSWORD_HASH"] = generate_password_hash("secret123")
 os.environ["LOGIN_RATE_LIMIT_BURST"] = "1000 per hour"
 os.environ["LOGIN_RATE_LIMIT_SUSTAINED"] = "1000 per hour"
+os.environ["DEFAULT_RATE_LIMIT"] = "10000 per hour"
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="ct_bugfix_"))
 
 import config

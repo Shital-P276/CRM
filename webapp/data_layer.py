@@ -2,11 +2,11 @@ import re
 import threading
 import zipfile
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pandas as pd
 import openpyxl
-import pytz
 from openpyxl.cell.cell import MergedCell
 
 import config
@@ -45,9 +45,14 @@ class DuplicateError(Exception):
         self.duplicates = duplicates
 
 
+class FormulaValidationError(Exception):
+    def __init__(self, errors):
+        super().__init__("invalid formula")
+        self.errors = errors
+
+
 def local_now() -> datetime:
-    tz = pytz.timezone(config.get_timezone_name())
-    return datetime.now(tz)
+    return datetime.now(ZoneInfo(config.TIMEZONE))
 
 
 def local_now_str() -> str:
@@ -182,10 +187,11 @@ def _detect_layout(ws) -> tuple:
     return header_row, has_template, first_col
 
 
-def _classify(ws, df, headers, template_row, first_col) -> tuple:
+def _classify(ws, df, headers, template_row, first_col, declared_types=None) -> tuple:
     formula_cols = []
     date_cols = []
     numeric_cols = []
+    declared_types = declared_types or {}
     template_row_values = None
     if ws is not None and ws.max_row >= template_row:
         template_row_values = [
@@ -204,13 +210,22 @@ def _classify(ws, df, headers, template_row, first_col) -> tuple:
 
         col_data = df.iloc[:, col_idx]
         non_empty = [v for v in col_data if v != ""]
+        declared_type = declared_types.get(header)
         numeric_count = sum(1 for v in non_empty if _NUMERIC_RE.match(str(v)) is not None)
-        if non_empty and numeric_count / len(non_empty) >= 0.75:
+        if not non_empty:
+            if declared_type == "number":
+                numeric_cols.append(header)
+        elif numeric_count / len(non_empty) >= 0.75:
             numeric_cols.append(header)
 
         header_upper = header.upper()
         date_cells = sum(1 for v in non_empty if _parse_datetime(str(v)) is not None)
-        if "DATE" in header_upper or (non_empty and date_cells / len(non_empty) >= 0.75):
+        if "DATE" in header_upper:
+            date_cols.append(header)
+        elif not non_empty:
+            if declared_type == "date":
+                date_cols.append(header)
+        elif date_cells / len(non_empty) >= 0.75:
             date_cols.append(header)
 
         if is_formula:
@@ -220,6 +235,12 @@ def _classify(ws, df, headers, template_row, first_col) -> tuple:
 
 
 def _parse_datetime(value: str):
+    """Parse a user-supplied date string into a naive datetime.
+
+    The value is entered by the user and is interpreted as Asia/Kolkata (IST)
+    wall-clock time; it never comes from the system clock. The result is kept
+    naive because xlsx has no timezone concept and openpyxl rejects tz-aware
+    datetimes (the stored wall-clock IS IST)."""
     match = _DATETIME_RE.match(value)
     if not match:
         return None
@@ -283,8 +304,9 @@ def load_sheet(workbook: str, sheet_name: str) -> Sheet:
             df = _build_default_frame()
         sheet.headers = [str(h) for h in df.columns]
         sheet.template = _capture_template(ws, sheet.template_row) if has_template else {}
+        declared_types = settings.get_column_types(workbook, sheet_name)
         sheet.formula_cols, sheet.numeric_cols, sheet.date_cols = _classify(
-            ws, df, sheet.headers, sheet.template_row, first_col
+            ws, df, sheet.headers, sheet.template_row, first_col, declared_types
         )
         sheet.orig_types = _capture_orig_types(ws, len(df), sheet.data_start_row)
 
@@ -310,10 +332,10 @@ def list_workbooks():
     if not config.DATA_DIR.exists():
         return []
     result = []
-    tz = pytz.timezone(config.get_timezone_name())
+    tz = ZoneInfo(config.TIMEZONE)
     for path in sorted(config.DATA_DIR.glob("*.xlsx")):
         stat = path.stat()
-        updated = datetime.fromtimestamp(stat.st_mtime, pytz.utc).astimezone(tz)
+        updated = datetime.fromtimestamp(stat.st_mtime, tz)
         result.append({"name": path.name, "updated_at": updated.strftime("%Y-%m-%d %H:%M:%S")})
     return result
 
@@ -400,7 +422,7 @@ def create_backup(workbook: str) -> None:
     src = config.DATA_DIR / workbook
     if not src.exists():
         return
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    stamp = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%Y%m%d-%H%M%S-%f")
     dest = _backup_dir() / f"{workbook}.{stamp}.bak"
     dest.write_bytes(src.read_bytes())
 
@@ -409,19 +431,78 @@ def create_backup(workbook: str) -> None:
         old.unlink()
 
 
+def _backup_stamp_dt(stamp: str):
+    for fmt in ("%Y%m%d-%H%M%S-%f", "%Y%m%d-%H%M%S"):
+        try:
+            return datetime.strptime(stamp, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _read_audit_entries() -> list:
+    """Parse audit.log into [{ts, action, workbook, sheet, excel_row, description}]."""
+    path = config.AUDIT_LOG
+    if not path.exists():
+        return []
+    entries = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            parts = line.strip().split(" | ")
+            if len(parts) < 5:
+                continue
+            ts, action, workbook, sheet, excel_row = parts[:5]
+            description = " | ".join(parts[5:])
+            try:
+                ts = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S IST")
+            except ValueError:
+                try:
+                    ts = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue
+            entries.append({
+                "ts": ts,
+                "action": action,
+                "workbook": workbook,
+                "sheet": sheet,
+                "excel_row": excel_row,
+                "description": description,
+            })
+    return entries
+
+
 def list_backups(workbook: str):
     result = []
-    for path in sorted(_backup_dir().glob(f"{workbook}.*.bak"), reverse=True):
+    backups = sorted(_backup_dir().glob(f"{workbook}.*.bak"), reverse=True)
+    entries = [e for e in _read_audit_entries() if e["workbook"] == workbook]
+    for path in backups:
         stat = path.stat()
         stamp = path.stem.split(".")[-1]
+        created_dt = _backup_stamp_dt(stamp)
         try:
-            created = datetime.strptime(stamp, "%Y%m%d-%H%M%S-%f").strftime("%Y-%m-%d %H:%M:%S")
+            created = created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else ""
         except ValueError:
-            try:
-                created = datetime.strptime(stamp, "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                created = ""
-        result.append({"filename": path.name, "created_at": created, "size_bytes": stat.st_size})
+            created = ""
+        description = f"Version from {created}"
+        if created_dt:
+            best = None
+            best_delta = None
+            for entry in entries:
+                delta = abs((entry["ts"] - created_dt).total_seconds())
+                if best_delta is None or delta < best_delta:
+                    best_delta = delta
+                    best = entry
+            if best is not None and best_delta is not None and best_delta <= 10:
+                label = f"{best['action']} — {best['sheet']}"
+                if best["excel_row"] not in ("", "0"):
+                    label += f" — row {best['excel_row']}"
+                description = label
+        result.append({
+            "filename": path.name,
+            "created_at": created,
+            "size_bytes": stat.st_size,
+            "description": description,
+        })
     return result[: config.BACKUP_KEEP]
 
 
@@ -436,6 +517,20 @@ def backup_path(filename: str):
     return path
 
 
+def revert_to_backup(workbook: str, filename: str) -> None:
+    path = backup_path(filename)
+    if not filename.startswith(workbook + "."):
+        raise SheetError("backup does not belong to this workbook")
+    current = config.DATA_DIR / workbook
+    if not current.exists():
+        raise SheetError("workbook not found")
+    create_backup(workbook)
+    tmp = current.with_suffix(".xlsx.tmp")
+    tmp.write_bytes(path.read_bytes())
+    tmp.replace(current)
+    _audit("REVERT", workbook, "", "", f"restored to {filename}")
+
+
 def _commit(sheet: Sheet, action: str, excel_row, description: str) -> None:
     save_sheet(sheet)
     tmp = sheet.path.with_suffix(".xlsx.tmp")
@@ -447,10 +542,15 @@ def _commit(sheet: Sheet, action: str, excel_row, description: str) -> None:
 
 def _duplicate_rows(sheet: Sheet, values: dict, exclude_index=None) -> list:
     matches = []
-    scan_headers = [h for h in sheet.headers if h != config.RESERVED_COLUMN]
+    configured = settings.get_duplicate_columns(sheet.workbook, sheet.sheet_name)
+    if configured:
+        scan_headers = [h for h in configured if h in sheet.headers and h != config.RESERVED_COLUMN]
+    else:
+        scan_headers = [h for h in sheet.headers if h != config.RESERVED_COLUMN]
+    keyword_filter = not configured
     for header in scan_headers:
         header_upper = header.upper()
-        if not any(k in header_upper for k in DUP_KEYWORDS):
+        if keyword_filter and not any(k in header_upper for k in DUP_KEYWORDS):
             continue
         if header not in values or values[header] == "":
             continue
@@ -594,18 +694,52 @@ def toggle_flag(sheet: Sheet, excel_row: int) -> dict:
     return {"flagged": flagged, "flagged_column_added": flagged_column_added}
 
 
-def add_sheet(workbook: str, sheet_name: str) -> None:
+def _normalize_columns(columns) -> list:
+    """Validate/normalize a user-supplied column list.
+
+    Accepts [{"name": str, "type": "text"|"number"|"date"}, ...]. Returns a
+    list of (name, type) tuples. Raises SheetError on a bad shape."""
+    if not isinstance(columns, list):
+        raise SheetError("columns must be a list")
+    result = []
+    seen = set()
+    for entry in columns:
+        if not isinstance(entry, dict):
+            raise SheetError("each column must be an object with name and type")
+        name = entry.get("name", "")
+        col_type = entry.get("type", "text")
+        if not isinstance(name, str) or not name.strip():
+            raise SheetError("column name must be a non-empty string")
+        name = name.strip()
+        if name == config.RESERVED_COLUMN:
+            raise SheetError(f"reserved column name: {name}")
+        if name in seen:
+            raise SheetError(f"duplicate column: {name}")
+        seen.add(name)
+        if col_type not in ("text", "number", "date"):
+            raise SheetError(f"invalid column type for {name}: {col_type}")
+        result.append((name, col_type))
+    return result
+
+
+def add_sheet(workbook: str, sheet_name: str, columns=None) -> None:
     path, wb_obj = _load_workbook(workbook)
     if sheet_name in wb_obj.sheetnames:
         raise SheetError(f"sheet already exists: {sheet_name}")
+    normalized = None
+    if columns is not None:
+        normalized = _normalize_columns(columns)
+    headers = _default_columns if normalized is None else [name for name, _ in normalized]
     ws = wb_obj.create_sheet(title=sheet_name)
-    for col_idx, header in enumerate(_default_columns):
+    for col_idx, header in enumerate(headers):
         ws.cell(row=EXCEL_HEADER_ROW, column=col_idx + 1, value=header)
     tmp = path.with_suffix(".xlsx.tmp")
     wb_obj.save(tmp)
     tmp.replace(path)
     create_backup(workbook)
-    _audit("ADD_SHEET", workbook, sheet_name, "", "added sheet")
+    _audit("ADD_SHEET", workbook, sheet_name, "", "added sheet" + (" with columns" if normalized else ""))
+    if normalized:
+        settings.set_column_types(workbook, sheet_name, dict(normalized))
 
 
 _file_locks_guard = threading.Lock()
@@ -622,3 +756,169 @@ def file_lock(workbook: str) -> threading.Lock:
 def compute_formula_values(sheet, row_values, insert_mode, new_excel_row):
     from formula import compute_formula_values as _impl
     return _impl(sheet, row_values, insert_mode, new_excel_row)
+
+
+def _template_formula_values(sheet: Sheet) -> dict:
+    result = {}
+    for col_idx, header in enumerate(sheet.headers):
+        spec = sheet.template.get(sheet.first_col + col_idx, {})
+        value = spec.get("value")
+        result[header] = value if isinstance(value, str) and value.startswith("=") else ""
+    return result
+
+
+def template_formulas(sheet: Sheet) -> dict:
+    """Read every column's template-row formula plus its Excel column letter.
+
+    Returns {header: {"formula": formula_text, "ref": column_letter}}."""
+    result = {}
+    for col_idx, header in enumerate(sheet.headers):
+        spec = sheet.template.get(sheet.first_col + col_idx, {})
+        value = spec.get("value")
+        formula = value if isinstance(value, str) and value.startswith("=") else ""
+        letter = openpyxl.utils.get_column_letter(sheet.first_col + col_idx)  # type: ignore[attr-defined]
+        result[header] = {"formula": formula, "ref": letter}
+    return result
+    return result
+
+
+def _add_column(sheet: Sheet, header: str) -> None:
+    sheet.headers.append(header)
+    if header not in sheet.df.columns:
+        sheet.df[header] = ""
+    col_abs = sheet.first_col + sheet.header_index(header)
+    for row_types in sheet.orig_types:
+        row_types[col_abs] = "s"
+
+
+def _recompute_rows(sheet: Sheet) -> list:
+    warnings = []
+    for index in range(len(sheet.df)):
+        excel_row = sheet.data_start_row + index
+        row_values = {h: sheet.cell_value(h, index) for h in sheet.headers}
+        computed, row_warnings = compute_formula_values(sheet, row_values, "edit", excel_row)
+        for header, value in computed.items():
+            sheet.set_cell(header, index, value)
+        warnings.extend(row_warnings)
+    return warnings
+
+
+def update_formulas(sheet: Sheet, formulas: dict) -> dict:
+    from formula import validate_formula
+
+    submitted = {}
+    for header, formula_text in (formulas or {}).items():
+        submitted[str(header)] = "" if formula_text is None else str(formula_text).strip()
+
+    errors = {}
+    for header, text in submitted.items():
+        if text == "":
+            continue
+        ok, reason = validate_formula(sheet, header, text)
+        if not ok:
+            errors[header] = reason
+    if errors:
+        raise FormulaValidationError(errors)
+
+    description_parts = []
+    for header, text in submitted.items():
+        if header not in sheet.headers:
+            _add_column(sheet, header)
+        col_abs = sheet.first_col + sheet.header_index(header)
+        if text == "":
+            sheet.template.pop(col_abs, None)
+            if header in sheet.formula_cols:
+                sheet.formula_cols.remove(header)
+        else:
+            sheet.template[col_abs] = {"value": text, "data_type": "f", "number_format": None}
+            if header not in sheet.formula_cols:
+                sheet.formula_cols.append(header)
+        description_parts.append(f"{header}={text}")
+
+    warnings = []
+    if sheet.formula_cols and len(sheet.df):
+        warnings = _recompute_rows(sheet)
+
+    description = ", ".join(description_parts) if description_parts else "no change"
+    _commit(sheet, "EDIT_FORMULA", "", description)
+    return {"formulas": _template_formula_values(sheet), "warnings": warnings}
+
+
+def add_column(sheet: Sheet, header: str, col_type: str) -> None:
+    if header in sheet.headers:
+        raise SheetError(f"column already exists: {header}")
+    if header == config.RESERVED_COLUMN:
+        raise SheetError(f"reserved column name: {header}")
+    if col_type not in ("text", "number", "date"):
+        raise SheetError(f"invalid column type: {col_type}")
+    sheet.headers.append(header)
+    sheet.df[header] = ""
+    col_abs = sheet.first_col + sheet.header_index(header)
+    for row_types in sheet.orig_types:
+        row_types[col_abs] = "s"
+    if col_type == "number":
+        sheet.numeric_cols.append(header)
+    elif col_type == "date":
+        sheet.date_cols.append(header)
+    settings.set_column_type(sheet.workbook, sheet.sheet_name, header, col_type)
+    _commit(sheet, "ADD_COLUMN", "", f"added column {header} ({col_type})")
+
+
+def delete_column(sheet: Sheet, header: str) -> None:
+    if header not in sheet.headers:
+        raise SheetError(f"unknown column: {header}")
+    if header == config.RESERVED_COLUMN:
+        raise SheetError("cannot delete the flagged column")
+    col_idx = sheet.header_index(header)
+    col_abs = sheet.first_col + col_idx
+    sheet.df = sheet.df.drop(columns=[header])
+    sheet.headers.remove(header)
+    if header in sheet.formula_cols:
+        sheet.formula_cols.remove(header)
+    if header in sheet.numeric_cols:
+        sheet.numeric_cols.remove(header)
+    if header in sheet.date_cols:
+        sheet.date_cols.remove(header)
+    sheet.template.pop(col_abs, None)
+    for row_types in sheet.orig_types:
+        shifted = {}
+        for c, t in row_types.items():
+            if c == col_abs:
+                continue
+            shifted[c - 1 if c > col_abs else c] = t
+        row_types.clear()
+        row_types.update(shifted)
+    settings.remove_column_type(sheet.workbook, sheet.sheet_name, header)
+    dup = settings.get_duplicate_columns(sheet.workbook, sheet.sheet_name)
+    if header in dup:
+        settings.set_duplicate_columns(
+            sheet.workbook, sheet.sheet_name, [c for c in dup if c != header]
+        )
+    _commit(sheet, "DELETE_COLUMN", "", f"deleted column {header}")
+
+
+def rename_column(sheet: Sheet, old_name: str, new_name: str) -> None:
+    if old_name not in sheet.headers:
+        raise SheetError(f"unknown column: {old_name}")
+    if old_name == config.RESERVED_COLUMN:
+        raise SheetError("cannot rename the flagged column")
+    if not isinstance(new_name, str) or not new_name.strip():
+        raise SheetError("column name must be a non-empty string")
+    new_name = new_name.strip()
+    if new_name == config.RESERVED_COLUMN:
+        raise SheetError(f"reserved column name: {new_name}")
+    if new_name in sheet.headers:
+        raise SheetError(f"column already exists: {new_name}")
+    sheet.headers[sheet.header_index(old_name)] = new_name
+    sheet.df = sheet.df.rename(columns={old_name: new_name})
+    for kind in (sheet.formula_cols, sheet.numeric_cols, sheet.date_cols):
+        if old_name in kind:
+            kind.remove(old_name)
+            kind.append(new_name)
+    settings.rename_column_type(sheet.workbook, sheet.sheet_name, old_name, new_name)
+    dup = settings.get_duplicate_columns(sheet.workbook, sheet.sheet_name)
+    if old_name in dup:
+        settings.set_duplicate_columns(
+            sheet.workbook, sheet.sheet_name, [new_name if c == old_name else c for c in dup]
+        )
+    _commit(sheet, "RENAME_COLUMN", "", f"{old_name} -> {new_name}")
