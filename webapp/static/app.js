@@ -142,6 +142,21 @@ el("btn-logout").addEventListener("click", async () => {
   showLogin();
 });
 
+window.addEventListener("pagehide", () => {
+  if (!state.csrfToken) return;
+  try {
+    fetch("/api/logout", {
+      method: "POST",
+      keepalive: true,
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": state.csrfToken,
+      },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+  } catch (_) {}
+});
+
 async function checkSession() {
   try {
     const data = await api("/api/session");
@@ -241,6 +256,7 @@ function sheetColRow() {
       <option value="text">Text</option>
       <option value="number">Number</option>
       <option value="date">Date</option>
+      <option value="amount">Amount</option>
     </select>
     <button type="button" class="btn btn-quiet sheet-col-remove" aria-label="Remove column">×</button>`;
   row.querySelector(".sheet-col-remove").addEventListener("click", () => row.remove());
