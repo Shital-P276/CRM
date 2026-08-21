@@ -55,6 +55,10 @@ body {
 button, input, select { font-family: inherit; font-size: inherit; }
 .hidden { display: none !important; }
 
+/* Mobile-only containers are hidden by default (shown under 600px) */
+#mobile-sort, #mobile-list, #mobile-fab, #mobile-bulk-bar, #mobile-totals-strip { display: none; }
+.topbar-more { display: none; }
+
 /* ---- Buttons ---- */
 .btn {
   min-height: 44px;
@@ -614,6 +618,250 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
   .modal { padding: 18px; max-height: 92vh; }
   .modal-backdrop { padding: 10px; align-items: flex-end; }
   .modal { border-radius: 12px 12px 0 0; max-width: 100%; }
+}
+
+/* ---- Mobile card list + action chrome (<600px) ---- */
+@media (max-width: 600px) {
+  #app-view { height: auto; }
+  .table-wrap { display: none; }
+
+  .toolbar-row .field-group { flex: 1 1 100%; }
+  .flagged-filter { flex: 0 0 auto; }
+  .action-window { display: none; }
+
+  #mobile-sort {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 14px 0;
+  }
+  #mobile-sort select { flex: 1; min-width: 0; }
+  #mobile-sort .m-sort-dir { flex: 0 0 44px; width: 44px; }
+
+  #mobile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px 150px;
+  }
+
+  .m-empty {
+    margin: 6px 0;
+    padding: 34px 16px;
+    text-align: center;
+    color: var(--muted);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+
+  .m-card {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    box-shadow: var(--shadow-sm);
+    padding: 10px 12px;
+  }
+  .m-card.flagged {
+    border-color: var(--flag-soft-border);
+    background: var(--flag-soft);
+  }
+  .m-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .m-card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .m-card-check {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+  .m-card-check .row-check { width: 20px; height: 20px; }
+  .m-card-id { flex: 1; min-width: 0; }
+  .m-card .flag-toggle {
+    opacity: 1;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    flex: 0 0 auto;
+  }
+
+  .m-field { display: flex; flex-direction: column; gap: 1px; }
+  .m-field-primary .m-field-label { margin-top: 2px; }
+  .m-field-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .m-field-value { font-size: 15px; line-height: 1.35; min-height: 24px; overflow-wrap: anywhere; }
+  .m-field-value.editable { cursor: text; }
+  .m-field-value.formula { color: var(--muted); font-style: italic; }
+  .m-field-value .cell-input { min-height: 44px; width: 100%; }
+
+  .m-card-id .m-field-value { font-size: 17px; font-weight: 600; }
+  .m-card-date .m-field-label, .m-card-date .m-field-value { color: var(--muted); }
+
+  .m-card-amount {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--hairline);
+  }
+  .m-card-amount .m-field-value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  .m-card-extra {
+    display: none;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--hairline);
+  }
+  .m-card.expanded .m-card-extra { display: block; }
+  .m-card-extra .m-field {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .m-card-extra .m-field:last-child { border-bottom: none; }
+  .m-card-extra .m-field-label { flex: 0 0 auto; }
+  .m-card-extra .m-field-value { flex: 1; text-align: right; font-size: 14.5px; min-width: 0; }
+
+  .m-card-toggle {
+    margin-top: 8px;
+    width: 100%;
+    min-height: 44px;
+    background: var(--panel-alt);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .m-card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* Floating action button */
+  #mobile-fab {
+    position: fixed;
+    right: 16px;
+    bottom: 20px;
+    z-index: 40;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    font-size: 26px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-md);
+  }
+  #app-view.has-bulk #mobile-fab { bottom: 84px; }
+
+  /* Bulk action bar (appears when rows are selected) */
+  #mobile-bulk-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--hairline);
+    box-shadow: 0 -4px 12px rgba(20, 24, 22, .08);
+  }
+  #mobile-bulk-bar .m-bulk-count { flex: 1; font-size: 14px; font-weight: 600; }
+  #mobile-bulk-bar .btn { min-height: 44px; flex: 0 0 auto; }
+
+  /* Compact totals strip */
+  #mobile-totals-strip {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 92px;
+    z-index: 39;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 14px;
+    padding: 8px 16px;
+    background: var(--panel-alt);
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  #mobile-totals-strip .m-totals-label {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    font-size: 10.5px;
+  }
+  #mobile-totals-strip .m-totals-pair {
+    font-weight: 600;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  #app-view.has-bulk #mobile-totals-strip { bottom: 148px; }
+
+  /* Topbar: collapse Format/Changes/Download/Upload into the "⋯" menu */
+  .topbar-more { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; font-size: 20px; }
+  .topbar-actions { display: none; }
+  .topbar-menu-wrap { position: relative; }
+  .topbar-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    min-width: 190px;
+    z-index: 60;
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    box-shadow: var(--shadow-md);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+  }
+  .topbar-menu-item {
+    min-height: 44px;
+    padding: 0 14px;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .topbar-menu-item:hover { background: var(--panel-alt); }
+  .topbar-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  /* Format modal: collapse all sections to a single column */
+  .modal-grid, .dup-col-list, .totals-col-list { grid-template-columns: 1fr; }
+  .manage-col-row { flex-wrap: wrap; }
+  .manage-col-type { flex: 1 1 auto; }
+  .manage-col-row .btn { flex: 1 1 auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

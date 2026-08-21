@@ -10,6 +10,7 @@ const state = {
   formulaCols: new Set(),
   numericCols: new Set(),
   dateCols: new Set(),
+  amountCols: new Set(),
   appendDirection: "bottom",
   sortCol: null,
   sortDir: 1,
@@ -28,6 +29,23 @@ const tableFoot = el("table-foot");
 const modalRoot = el("modal-root");
 const toastRoot = el("toast-root");
 const warningsBanner = el("warnings-banner");
+
+// ---------------- Mobile viewport ----------------
+
+const MOBILE_BREAKPOINT = 600; // matches the existing 600px CSS breakpoint
+let lastMobile = null;
+
+function isMobile() {
+  return window.innerWidth <= MOBILE_BREAKPOINT;
+}
+
+window.addEventListener("resize", () => {
+  const nowMobile = isMobile();
+  if (nowMobile !== lastMobile) {
+    lastMobile = nowMobile;
+    if (state.headers.length) renderTable();
+  }
+});
 
 // ---------------- API helper ----------------
 
@@ -155,6 +173,39 @@ window.addEventListener("pagehide", () => {
       body: JSON.stringify({}),
     }).catch(() => {});
   } catch (_) {}
+});
+
+// ---------------- Mobile topbar "⋯" menu ----------------
+
+el("btn-more").addEventListener("click", () => {
+  const menu = el("topbar-menu");
+  const willOpen = menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !willOpen);
+  el("btn-more").setAttribute("aria-expanded", willOpen ? "true" : "false");
+});
+
+document.addEventListener("click", (e) => {
+  const menu = el("topbar-menu");
+  if (menu.classList.contains("hidden")) return;
+  if (!e.target.closest(".topbar-menu-wrap")) {
+    menu.classList.add("hidden");
+    el("btn-more").setAttribute("aria-expanded", "false");
+  }
+});
+
+el("topbar-menu").querySelectorAll(".topbar-menu-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    el("topbar-menu").classList.add("hidden");
+    el("btn-more").setAttribute("aria-expanded", "false");
+    const map = {
+      formulas: "btn-formulas",
+      changes: "btn-changes",
+      download: "btn-download",
+      upload: "btn-upload",
+    };
+    const target = el(map[item.dataset.action]);
+    if (target) target.click();
+  });
 });
 
 async function checkSession() {
@@ -389,6 +440,18 @@ function formatINR(value) {
   return (n < 0 ? "-" : "") + grouped + (frac !== undefined ? "." + frac : "");
 }
 
+// Single source of truth for how a cell value is displayed. Used by both the
+// desktop table and the mobile card list so the two can never drift apart.
+function formatCellValue(header, value) {
+  const raw = value ?? "";
+  if (state.formulaCols.has(header)) {
+    return state.amountCols.has(header) ? formatINR(raw) : raw;
+  }
+  if (state.dateCols.has(header)) return formatDate(raw);
+  if (state.amountCols.has(header)) return formatINR(raw);
+  return raw;
+}
+
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -485,12 +548,11 @@ function renderTable() {
   renderTableBody();
 }
 
-function renderTableFoot(visible) {
-  tableFoot.innerHTML = "";
+function computeTotals(visible) {
   const activeCols = state.headers.filter(
     (h) => h !== "FLAGGED" && state.totals[h] && state.totals[h] !== "off"
   );
-  if (!activeCols.length) return;
+  if (!activeCols.length) return [];
 
   if (!visible) visible = getFilteredSortedRows();
   const pool = (mode) => {
@@ -500,6 +562,31 @@ function renderTableFoot(visible) {
     if (mode === "visible_flagged") return visible.filter((r) => r.flagged);
     return [];
   };
+
+  return activeCols.map((h) => {
+    const mode = state.totals[h];
+    const rows = pool(mode);
+    const isNumeric = state.numericCols.has(h);
+    const isAmount = state.amountCols.has(h);
+    let text = "";
+    if (isNumeric) {
+      const nums = rows.map((r) => Number(r.values[h])).filter((n) => Number.isFinite(n));
+      if (nums.length) {
+        const sum = nums.reduce((a, b) => a + b, 0);
+        text = isAmount ? formatINR(sum) : sum.toLocaleString();
+      }
+    } else if (rows.length) {
+      text = String(rows.length);
+    }
+    return { header: h, mode, text, isAmount, isNumeric };
+  }).filter((t) => t.text !== "");
+}
+
+function renderTableFoot(visible) {
+  tableFoot.innerHTML = "";
+  const totals = computeTotals(visible);
+  if (!totals.length) return;
+  const totalsByCol = new Map(totals.map((t) => [t.header, t]));
 
   const tr = document.createElement("tr");
   tr.className = "totals-row";
@@ -514,19 +601,10 @@ function renderTableFoot(visible) {
   state.headers.forEach((h) => {
     if (h === "FLAGGED") return;
     const td = document.createElement("td");
-    const mode = state.totals[h];
-    if (mode && mode !== "off") {
-      const rows = pool(mode);
-      if (state.numericCols.has(h)) {
-        const nums = rows.map((r) => Number(r.values[h])).filter((n) => Number.isFinite(n));
-        if (nums.length) {
-          td.classList.add("numeric");
-          const sum = nums.reduce((a, b) => a + b, 0);
-          td.textContent = state.amountCols.has(h) ? formatINR(sum) : sum.toLocaleString();
-        }
-      } else if (rows.length) {
-        td.textContent = String(rows.length);
-      }
+    const t = totalsByCol.get(h);
+    if (t) {
+      if (t.isNumeric) td.classList.add("numeric");
+      td.textContent = t.text;
     }
     tr.appendChild(td);
   });
@@ -539,6 +617,10 @@ function renderTableFoot(visible) {
 
 function renderTableBody() {
   const rows = getFilteredSortedRows();
+  if (isMobile()) {
+    renderMobileBody(rows);
+    return;
+  }
   tableBody.innerHTML = "";
 
   if (!rows.length) {
@@ -578,17 +660,15 @@ function renderTableBody() {
       const td = document.createElement("td");
       const isFormula = state.formulaCols.has(h);
       const isNum = state.numericCols.has(h);
-      const isDate = state.dateCols.has(h);
-      const isAmount = state.amountCols.has(h);
       if (isNum) td.classList.add("numeric");
       if (isFormula) {
         td.classList.add("formula");
-        td.textContent = isAmount ? formatINR(row.values[h]) : (row.values[h] ?? "");
+        td.textContent = formatCellValue(h, row.values[h]);
       } else {
         td.classList.add("editable");
-        td.textContent = isDate ? formatDate(row.values[h]) : isAmount ? formatINR(row.values[h]) : (row.values[h] ?? "");
+        td.textContent = formatCellValue(h, row.values[h]);
         td.title = "Click to edit";
-        td.addEventListener("click", () => editCell(td, row, h, isDate));
+        td.addEventListener("click", () => startInlineEdit(td, row, h));
       }
       tr.appendChild(td);
     });
@@ -624,19 +704,264 @@ function renderEmptyTable(message) {
   tableHead.innerHTML = "";
   renderEmptyBody(message);
   renderTableFoot([]);
+  if (isMobile()) {
+    renderMobileBody([], message);
+  }
+}
+
+// ---------------- Mobile (card list) rendering ----------------
+
+function mobileIdentityCols() {
+  const cols = state.headers.filter((h) => h !== "FLAGGED");
+  const NAME_RE = /CUSTOMER|NAME|CONTACT|PHONE|EMAIL|CUST|VEHICLE|MODEL|CAR|ACCOUNT|BANK|NO\.?/i;
+  let nameCol = null, dateCol = null, amountCol = null;
+
+  for (const h of cols) {
+    if (!nameCol && NAME_RE.test(h)) nameCol = h;
+    if (!amountCol && state.amountCols.has(h)) amountCol = h;
+  }
+  dateCol = cols.find((h) => state.dateCols.has(h)) || null;
+  if (!dateCol) {
+    dateCol = cols.find((h) => /DATE|RECEIVED ON|PAYMENT DATE|FOLLOW-?UP|VISIT DATE/i.test(h)) || null;
+  }
+  if (!nameCol) {
+    nameCol = cols.find((h) => h !== dateCol && h !== amountCol && !state.numericCols.has(h)) || cols[0];
+  }
+  return { nameCol, dateCol, amountCol };
+}
+
+function mobileCardField(header, row, isPrimary, className) {
+  const isFormula = state.formulaCols.has(header);
+  const field = document.createElement("div");
+  field.className = className || "m-field";
+  if (isPrimary) field.classList.add("m-field-primary");
+  const label = document.createElement("span");
+  label.className = "m-field-label";
+  label.textContent = header;
+  const value = document.createElement("span");
+  value.className = "m-field-value" + (isFormula ? " formula" : " editable");
+  value.textContent = formatCellValue(header, row.values[header]);
+  field.appendChild(label);
+  field.appendChild(value);
+  if (!isFormula) {
+    value.addEventListener("click", () => startInlineEdit(value, row, header));
+  }
+  return field;
+}
+
+function buildMobileCard(row, identity) {
+  const card = document.createElement("div");
+  card.className = "m-card";
+  if (row.flagged) card.classList.add("flagged");
+  if (state.selected.has(row.excel_row)) card.classList.add("selected");
+  card.dataset.excelRow = String(row.excel_row);
+
+  const head = document.createElement("div");
+  head.className = "m-card-head";
+
+  const check = document.createElement("label");
+  check.className = "m-card-check";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "row-check";
+  cb.checked = state.selected.has(row.excel_row);
+  cb.setAttribute("aria-label", "Select this record");
+  cb.addEventListener("change", () => {
+    if (cb.checked) state.selected.add(row.excel_row);
+    else state.selected.delete(row.excel_row);
+    card.classList.toggle("selected", cb.checked);
+    renderMobileBars();
+  });
+  check.appendChild(cb);
+  head.appendChild(check);
+
+  const idBlock = document.createElement("div");
+  idBlock.className = "m-card-id";
+  if (identity.nameCol) {
+    idBlock.appendChild(mobileCardField(identity.nameCol, row, true));
+  }
+  if (identity.dateCol && identity.dateCol !== identity.nameCol) {
+    idBlock.appendChild(mobileCardField(identity.dateCol, row, false, "m-field m-card-date"));
+  }
+  head.appendChild(idBlock);
+
+  const flagBtn = document.createElement("button");
+  flagBtn.type = "button";
+  flagBtn.className = "flag-toggle" + (row.flagged ? " flagged" : "");
+  flagBtn.innerHTML = '<span aria-hidden="true">&#9873;</span>';
+  flagBtn.setAttribute("aria-label", row.flagged ? "Unflag this row" : "Flag this row");
+  flagBtn.addEventListener("click", () => toggleFlag(row));
+  head.appendChild(flagBtn);
+
+  card.appendChild(head);
+
+  if (identity.amountCol && identity.amountCol !== identity.nameCol && identity.amountCol !== identity.dateCol) {
+    card.appendChild(mobileCardField(identity.amountCol, row, false, "m-card-amount"));
+  }
+
+  const extra = document.createElement("div");
+  extra.className = "m-card-extra";
+  const headCols = new Set([identity.nameCol, identity.dateCol, identity.amountCol].filter(Boolean));
+  state.headers.forEach((h) => {
+    if (h === "FLAGGED" || headCols.has(h)) return;
+    extra.appendChild(mobileCardField(h, row, false));
+  });
+  card.appendChild(extra);
+
+  let toggleBtn = null;
+  if (extra.childElementCount) {
+    toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "m-card-toggle";
+    toggleBtn.setAttribute("aria-expanded", "false");
+    toggleBtn.textContent = "Show all fields";
+    toggleBtn.addEventListener("click", () => {
+      const expanded = card.classList.toggle("expanded");
+      toggleBtn.textContent = expanded ? "Show fewer" : "Show all fields";
+      toggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    });
+    card.appendChild(toggleBtn);
+  }
+
+  card.addEventListener("click", (e) => {
+    if (e.target.closest("input, button, .m-field-value")) return;
+    if (toggleBtn) toggleBtn.click();
+  });
+
+  return card;
+}
+
+function renderMobileSort() {
+  const host = el("mobile-sort");
+  host.innerHTML = "";
+  if (!state.headers.length) {
+    host.classList.add("hidden");
+    return;
+  }
+  host.classList.remove("hidden");
+
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Sort records by");
+  const noneOpt = document.createElement("option");
+  noneOpt.value = "";
+  noneOpt.textContent = "Sort by\u2026";
+  select.appendChild(noneOpt);
+  state.headers.forEach((h) => {
+    if (h === "FLAGGED") return;
+    const opt = document.createElement("option");
+    opt.value = h;
+    opt.textContent = h + (state.formulaCols.has(h) ? " (fx)" : "");
+    if (state.sortCol === h) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.addEventListener("change", () => {
+    state.sortCol = select.value || null;
+    state.sortDir = 1;
+    renderTable();
+  });
+  host.appendChild(select);
+
+  const dirBtn = document.createElement("button");
+  dirBtn.type = "button";
+  dirBtn.className = "btn btn-icon m-sort-dir";
+  dirBtn.setAttribute("aria-label", "Toggle sort direction");
+  dirBtn.textContent = state.sortCol ? (state.sortDir === 1 ? "\u25B2" : "\u25BC") : "\u25B2";
+  dirBtn.disabled = !state.sortCol;
+  dirBtn.addEventListener("click", () => {
+    state.sortDir *= -1;
+    renderTable();
+  });
+  host.appendChild(dirBtn);
+}
+
+function renderMobileTotals(visible) {
+  const strip = el("mobile-totals-strip");
+  const totals = computeTotals(visible);
+  if (!totals.length) {
+    strip.classList.add("hidden");
+    strip.innerHTML = "";
+    return;
+  }
+  strip.classList.remove("hidden");
+  strip.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "m-totals-label";
+  label.textContent = "Totals";
+  strip.appendChild(label);
+  const pairs = document.createElement("span");
+  pairs.className = "m-totals-pairs";
+  totals.forEach((t) => {
+    const pair = document.createElement("span");
+    pair.className = "m-totals-pair";
+    pair.textContent = `${t.header}: ${t.text}`;
+    pairs.appendChild(pair);
+  });
+  strip.appendChild(pairs);
+}
+
+function renderMobileBars() {
+  const bar = el("mobile-bulk-bar");
+  if (!state.selected.size) {
+    bar.classList.add("hidden");
+    bar.innerHTML = "";
+    appView.classList.remove("has-bulk");
+    return;
+  }
+  bar.classList.remove("hidden");
+  appView.classList.add("has-bulk");
+  const count = state.selected.size;
+  bar.innerHTML = `
+    <span class="m-bulk-count">${count} selected</span>
+    <button type="button" class="btn m-bulk-flag">Flag</button>
+    <button type="button" class="btn btn-danger-outline m-bulk-delete">Delete</button>
+    <button type="button" class="btn btn-quiet m-bulk-cancel" aria-label="Clear selection">&#10005;</button>`;
+  bar.querySelector(".m-bulk-flag").addEventListener("click", flagSelected);
+  bar.querySelector(".m-bulk-delete").addEventListener("click", deleteSelected);
+  bar.querySelector(".m-bulk-cancel").addEventListener("click", () => {
+    state.selected.clear();
+    renderTableBody();
+  });
+}
+
+function renderMobileBody(rows, emptyMessage) {
+  el("mobile-fab").classList.remove("hidden");
+  renderMobileSort();
+  const list = el("mobile-list");
+  list.classList.remove("hidden");
+  list.innerHTML = "";
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "m-empty";
+    empty.textContent = emptyMessage || (state.search || state.flaggedOnly
+      ? "No matching records."
+      : "No records yet \u2014 add your first one.");
+    list.appendChild(empty);
+    renderMobileTotals(rows);
+    renderMobileBars();
+    return;
+  }
+
+  const identity = mobileIdentityCols();
+  rows.forEach((row) => {
+    list.appendChild(buildMobileCard(row, identity));
+  });
+  renderMobileTotals(rows);
+  renderMobileBars();
 }
 
 // ---------------- Inline cell edit ----------------
 
-function editCell(td, row, header, isDate) {
-  if (td.querySelector("input")) return;
+function startInlineEdit(node, row, header) {
+  if (node.querySelector("input")) return;
+  const isDate = state.dateCols.has(header);
   const original = row.values[header] ?? "";
   const input = document.createElement("input");
   input.className = "cell-input";
   input.type = isDate ? "date" : "text";
   input.value = original;
-  td.textContent = "";
-  td.appendChild(input);
+  node.textContent = "";
+  node.appendChild(input);
   input.focus();
   input.select();
 
@@ -646,7 +971,7 @@ function editCell(td, row, header, isDate) {
     done = true;
     const newValue = input.value;
     if (newValue === original) {
-      td.textContent = isDate ? formatDate(original) : original;
+      node.textContent = formatCellValue(header, original);
       return;
     }
     try {
@@ -719,7 +1044,7 @@ async function toggleFlag(row) {
   }
 }
 
-el("btn-flag").addEventListener("click", async () => {
+async function flagSelected() {
   if (!state.selected.size) { toast("Select one or more rows first.", "warn"); return; }
   const rowsByExcel = new Map(state.rows.map((r) => [r.excel_row, r]));
   let allOk = true;
@@ -733,11 +1058,12 @@ el("btn-flag").addEventListener("click", async () => {
     state.selected.clear();
     renderTableBody();
   }
-});
+}
+el("btn-flag").addEventListener("click", flagSelected);
 
 // ---------------- Delete ----------------
 
-el("btn-delete").addEventListener("click", async () => {
+async function deleteSelected() {
   if (!state.selected.size) { toast("Select one or more rows first.", "warn"); return; }
   const count = state.selected.size;
   const ok = await confirmDialog(
@@ -758,7 +1084,8 @@ el("btn-delete").addEventListener("click", async () => {
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}
+el("btn-delete").addEventListener("click", deleteSelected);
 
 // ---------------- Search / filter ----------------
 
@@ -780,6 +1107,7 @@ el("flagged-only").addEventListener("change", (e) => {
 // ---------------- Add record modal ----------------
 
 el("btn-add").addEventListener("click", openAddModal);
+el("mobile-fab").addEventListener("click", openAddModal);
 
 function openAddModal() {
   const fields = state.headers.filter((h) => h !== "FLAGGED");
@@ -1263,4 +1591,5 @@ function confirmDialog(title, message, listItems) {
 
 // ---------------- Boot ----------------
 
+lastMobile = isMobile();
 checkSession();

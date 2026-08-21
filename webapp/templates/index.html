@@ -38,6 +38,15 @@
           <button id="btn-download" class="util-link">Download</button>
           <button id="btn-upload" class="util-link">Upload</button>
         </nav>
+        <div class="topbar-menu-wrap">
+          <button id="btn-more" class="util-link topbar-more" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">&#8942;</button>
+          <div id="topbar-menu" class="topbar-menu hidden" role="menu">
+            <button type="button" class="topbar-menu-item" data-action="formulas">Format</button>
+            <button type="button" class="topbar-menu-item" data-action="changes">Changes</button>
+            <button type="button" class="topbar-menu-item" data-action="download">Download</button>
+            <button type="button" class="topbar-menu-item" data-action="upload">Upload</button>
+          </div>
+        </div>
         <span class="topbar-divider" aria-hidden="true"></span>
         <button id="btn-logout" class="util-link util-link-danger">Logout</button>
       </div>
@@ -81,6 +90,12 @@
         <tfoot id="table-foot"></tfoot>
       </table>
     </div>
+
+    <div id="mobile-sort" class="hidden"></div>
+    <div id="mobile-list" class="hidden"></div>
+    <button id="mobile-fab" class="hidden" type="button" aria-label="Add record">+</button>
+    <div id="mobile-bulk-bar" class="hidden" role="toolbar" aria-label="Selected record actions"></div>
+    <div id="mobile-totals-strip" class="hidden"></div>
   </div>
 
   <div id="modal-root"></div>
