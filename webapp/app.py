@@ -161,6 +161,7 @@ def create_app() -> Flask:
             "has_flagged": loaded.has_flagged,
             "append_direction": settings.get_append_direction(wb),
             "totals": settings.get_totals(wb, sheet),
+            "mobile_card_fields": settings.get_mobile_card_fields(wb, sheet),
             "warnings": loaded.warnings,
         })
 
@@ -458,6 +459,7 @@ def create_app() -> Flask:
         if sheet:
             result["duplicate_check_columns"] = settings.get_duplicate_columns(wb, sheet)
             result["totals"] = settings.get_totals(wb, sheet)
+            result["mobile_card_fields"] = settings.get_mobile_card_fields(wb, sheet)
         return jsonify(result)
 
     @app.put("/api/settings")
@@ -493,12 +495,18 @@ def create_app() -> Flask:
                 settings.set_totals(wb, sheet, totals)
             except ValueError as error:
                 raise data_layer.SheetError(str(error))
+        mobile_card = data.get("mobile_card_fields")
+        if sheet and mobile_card is not None:
+            if not isinstance(mobile_card, dict):
+                raise data_layer.SheetError("mobile_card_fields must be an object")
+            settings.set_mobile_card_fields(wb, sheet, mobile_card)
         direction = str(data.get("append_direction", ""))
         settings.set_append_direction(wb, direction)
         result: dict = {"append_direction": settings.get_append_direction(wb)}
         if sheet:
             result["duplicate_check_columns"] = settings.get_duplicate_columns(wb, sheet)
             result["totals"] = settings.get_totals(wb, sheet)
+            result["mobile_card_fields"] = settings.get_mobile_card_fields(wb, sheet)
         return jsonify(result)
 
     return app

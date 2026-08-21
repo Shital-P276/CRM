@@ -491,6 +491,9 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
 .modal-field label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .modal-field input:disabled { background: var(--panel-alt); color: var(--muted); cursor: not-allowed; }
 .modal-field .hint { font-size: 11.5px; color: var(--muted); }
+.modal-field + .modal-field { margin-top: 10px; }
+.modal-grid + .modal-field { margin-top: 16px; }
+.hint-inline { display: inline; margin-left: 6px; }
 
 .duplicate-list { list-style: none; margin: 0 0 14px; padding: 0; border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; }
 .duplicate-list li { padding: 10px 12px; border-bottom: 1px solid var(--hairline); font-size: 13.5px; background: var(--panel-alt); }
@@ -626,6 +629,7 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
   .table-wrap { display: none; }
 
   .toolbar-row .field-group { flex: 1 1 100%; }
+  .toolbar-row > .field-group:nth-child(-n+2) { flex: 1 1 45%; min-width: 0; }
   .flagged-filter { flex: 0 0 auto; }
   .action-window { display: none; }
 
@@ -642,7 +646,7 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 12px 14px 150px;
+    padding: 12px 14px 92px;
   }
 
   .m-empty {
@@ -711,10 +715,19 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
   .m-card-id .m-field-value { font-size: 17px; font-weight: 600; }
   .m-card-date .m-field-label, .m-card-date .m-field-value { color: var(--muted); }
 
-  .m-card-amount {
+  .m-card-amount-row {
+    display: flex;
+    gap: 12px;
     margin-top: 8px;
     padding-top: 8px;
     border-top: 1px solid var(--hairline);
+  }
+  .m-card-amount {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 0;
+    min-width: 0;
   }
   .m-card-amount .m-field-value {
     font-family: var(--font-mono);
@@ -774,7 +787,6 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
     justify-content: center;
     box-shadow: var(--shadow-md);
   }
-  #app-view.has-bulk #mobile-fab { bottom: 84px; }
 
   /* Bulk action bar (appears when rows are selected) */
   #mobile-bulk-bar {
@@ -794,36 +806,39 @@ input[type="checkbox"].row-check { width: 17px; height: 17px; accent-color: var(
   #mobile-bulk-bar .m-bulk-count { flex: 1; font-size: 14px; font-weight: 600; }
   #mobile-bulk-bar .btn { min-height: 44px; flex: 0 0 auto; }
 
-  /* Compact totals strip */
+  /* Totals strip — stacked chips, fixed at bottom edge */
   #mobile-totals-strip {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 92px;
+    bottom: 0;
     z-index: 39;
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: 4px 14px;
+    gap: 10px;
     padding: 8px 16px;
     background: var(--panel-alt);
     border-top: 1px solid var(--hairline);
     border-bottom: 1px solid var(--hairline);
-    font-size: 12.5px;
+  }
+  #mobile-totals-strip .m-totals-chip {
+    display: flex;
+    flex-direction: column;
+    min-width: 80px;
+  }
+  #mobile-totals-strip .m-totals-chip .m-field-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
     color: var(--muted);
   }
-  #mobile-totals-strip .m-totals-label {
+  #mobile-totals-strip .m-totals-chip .m-totals-value {
+    font-size: 15px;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: .05em;
-    font-size: 10.5px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
-  #mobile-totals-strip .m-totals-pair {
-    font-weight: 600;
-    color: var(--ink);
-    white-space: nowrap;
-  }
-  #app-view.has-bulk #mobile-totals-strip { bottom: 148px; }
 
   /* Topbar: collapse Format/Changes/Download/Upload into the "⋯" menu */
   .topbar-more { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; font-size: 20px; }

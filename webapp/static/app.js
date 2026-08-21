@@ -18,6 +18,7 @@ const state = {
   flaggedOnly: false,
   selected: new Set(),
   totals: {},
+  mobileCardFields: {},
 };
 
 const el = (id) => document.getElementById(id);
@@ -321,8 +322,8 @@ async function openNewSheetModal() {
       <label for="new-sheet-name">Sheet name</label>
       <input id="new-sheet-name" type="text" placeholder="e.g. January 2026">
     </div>
-    <div class="modal-field" style="margin-top:14px;">
-      <label>Columns <span class="hint" style="display:inline; margin-left:6px;">optional — defaults to DATE / CUSTOMER NAME</span></label>
+    <div class="modal-field">
+      <label>Columns <span class="hint hint-inline">optional — defaults to DATE / CUSTOMER NAME</span></label>
       <div id="new-sheet-cols"></div>
       <button type="button" class="btn btn-quiet add-sheet-col-btn" id="add-sheet-col">+ Add column</button>
     </div>
@@ -391,6 +392,7 @@ async function loadSheetData() {
   state.amountCols = new Set(data.amount_cols || []);
   state.appendDirection = data.append_direction || state.appendDirection;
   state.totals = data.totals || {};
+  state.mobileCardFields = data.mobile_card_fields || {};
   state.selected.clear();
   renderWarnings(data.warnings || []);
   renderTable();
@@ -727,7 +729,22 @@ function mobileIdentityCols() {
   if (!nameCol) {
     nameCol = cols.find((h) => h !== dateCol && h !== amountCol && !state.numericCols.has(h)) || cols[0];
   }
-  return { nameCol, dateCol, amountCol };
+
+  // Apply per-sheet overrides from Format → Mobile card fields settings.
+  const overrides = state.mobileCardFields;
+  if (overrides.primary && cols.includes(overrides.primary)) {
+    nameCol = overrides.primary;
+  }
+  if (overrides.secondary && cols.includes(overrides.secondary) && overrides.secondary !== nameCol) {
+    amountCol = overrides.secondary;
+  }
+  let tertiaryCol = null;
+  if (overrides.tertiary && cols.includes(overrides.tertiary)
+      && overrides.tertiary !== nameCol && overrides.tertiary !== amountCol) {
+    tertiaryCol = overrides.tertiary;
+  }
+
+  return { nameCol, dateCol, amountCol, tertiaryCol };
 }
 
 function mobileCardField(header, row, isPrimary, className) {
@@ -795,13 +812,19 @@ function buildMobileCard(row, identity) {
 
   card.appendChild(head);
 
-  if (identity.amountCol && identity.amountCol !== identity.nameCol && identity.amountCol !== identity.dateCol) {
-    card.appendChild(mobileCardField(identity.amountCol, row, false, "m-card-amount"));
+  const secondaryVisible = identity.amountCol && identity.amountCol !== identity.nameCol && identity.amountCol !== identity.dateCol;
+  const tertiaryVisible = identity.tertiaryCol && identity.tertiaryCol !== identity.nameCol && identity.tertiaryCol !== identity.dateCol && identity.tertiaryCol !== identity.amountCol;
+  if (secondaryVisible || tertiaryVisible) {
+    const amountRow = document.createElement("div");
+    amountRow.className = "m-card-amount-row";
+    if (secondaryVisible) amountRow.appendChild(mobileCardField(identity.amountCol, row, false, "m-card-amount"));
+    if (tertiaryVisible) amountRow.appendChild(mobileCardField(identity.tertiaryCol, row, false, "m-card-amount"));
+    card.appendChild(amountRow);
   }
 
   const extra = document.createElement("div");
   extra.className = "m-card-extra";
-  const headCols = new Set([identity.nameCol, identity.dateCol, identity.amountCol].filter(Boolean));
+  const headCols = new Set([identity.nameCol, identity.dateCol, identity.amountCol, identity.tertiaryCol].filter(Boolean));
   state.headers.forEach((h) => {
     if (h === "FLAGGED" || headCols.has(h)) return;
     extra.appendChild(mobileCardField(h, row, false));
@@ -880,23 +903,56 @@ function renderMobileTotals(visible) {
   if (!totals.length) {
     strip.classList.add("hidden");
     strip.innerHTML = "";
+    updateMobilePadding();
     return;
   }
   strip.classList.remove("hidden");
   strip.innerHTML = "";
-  const label = document.createElement("span");
-  label.className = "m-totals-label";
-  label.textContent = "Totals";
-  strip.appendChild(label);
-  const pairs = document.createElement("span");
-  pairs.className = "m-totals-pairs";
   totals.forEach((t) => {
-    const pair = document.createElement("span");
-    pair.className = "m-totals-pair";
-    pair.textContent = `${t.header}: ${t.text}`;
-    pairs.appendChild(pair);
+    const chip = document.createElement("div");
+    chip.className = "m-totals-chip";
+    const label = document.createElement("span");
+    label.className = "m-field-label";
+    label.textContent = t.header;
+    const value = document.createElement("span");
+    value.className = "m-totals-value";
+    value.textContent = t.text;
+    chip.appendChild(label);
+    chip.appendChild(value);
+    strip.appendChild(chip);
   });
-  strip.appendChild(pairs);
+  // Hide totals strip when bulk bar is active.
+  if (state.selected.size) {
+    strip.classList.add("hidden");
+  }
+  updateMobilePadding();
+}
+
+function updateMobilePadding() {
+  const list = el("mobile-list");
+  if (!list || list.classList.contains("hidden")) return;
+  const fab = el("mobile-fab");
+  const totalsStrip = el("mobile-totals-strip");
+  const bulkBar = el("mobile-bulk-bar");
+  const GAP = 16;
+
+  const totalsVisible = totalsStrip && !totalsStrip.classList.contains("hidden");
+  const bulkVisible = bulkBar && !bulkBar.classList.contains("hidden");
+
+  // Position FAB above whichever bottom bar is currently showing.
+  let fabBottom = 20; // default: near viewport bottom
+  if (bulkVisible) {
+    fabBottom = bulkBar.offsetHeight + GAP;
+  } else if (totalsVisible) {
+    fabBottom = totalsStrip.offsetHeight + GAP;
+  }
+  if (fab) fab.style.bottom = fabBottom + "px";
+
+  // Card list padding = highest point any fixed bottom element reaches + gap.
+  let highestPx = fabBottom + 56; // FAB top edge
+  if (totalsVisible) highestPx = Math.max(highestPx, totalsStrip.offsetHeight);
+  if (bulkVisible) highestPx = Math.max(highestPx, bulkBar.offsetHeight);
+  list.style.paddingBottom = (highestPx + GAP) + "px";
 }
 
 function renderMobileBars() {
@@ -905,6 +961,7 @@ function renderMobileBars() {
     bar.classList.add("hidden");
     bar.innerHTML = "";
     appView.classList.remove("has-bulk");
+    updateMobilePadding();
     return;
   }
   bar.classList.remove("hidden");
@@ -921,6 +978,7 @@ function renderMobileBars() {
     state.selected.clear();
     renderTableBody();
   });
+  updateMobilePadding();
 }
 
 function renderMobileBody(rows, emptyMessage) {
@@ -1128,7 +1186,7 @@ function openAddModal() {
   openModal(`
     <h2>Add record</h2>
     <div class="modal-grid">${formHtml}</div>
-    <div class="modal-field" style="margin-top:16px;">
+    <div class="modal-field">
       <label for="add-append">New records go to</label>
       <select id="add-append" aria-label="Append direction">
         <option value="bottom"${state.appendDirection === "bottom" ? " selected" : ""}>Bottom</option>
@@ -1350,7 +1408,7 @@ async function openFormatModal() {
       <summary>Formulas</summary>
       <p class="modal-sub">Formulas apply to every new row added to this sheet. Column letters are shown next to each name — use them like =D2*1.18.</p>
       <div class="modal-grid">${formulaRows}</div>
-      <div class="modal-field" style="margin-top:16px;">
+      <div class="modal-field">
         <label>Add a new column</label>
         <div class="inline-pair">
           <input id="format-new-col" type="text" placeholder="Column name, e.g. GST TOTAL">
@@ -1369,6 +1427,34 @@ async function openFormatModal() {
       <summary>Column totals</summary>
       <p class="hint">Numeric columns show a sum, other columns show a count. "Visible" respects the current search and flag filter; "Flagged" only counts flagged rows.</p>
       <div class="totals-col-list">${totalsRows}</div>
+    </details>
+
+    <details class="format-section">
+      <summary>Mobile card fields</summary>
+      <p class="hint">Override which columns appear prominently on mobile. Leave as the default to use automatic detection.</p>
+      <div class="modal-field">
+        <label for="mobile-primary">Primary field</label>
+        <select id="mobile-primary" aria-label="Primary card field">
+          <option value="">Auto-detect</option>
+          ${columnHeaders.map((h) => `<option value="${escapeHtml(h)}"${h === (settingsData.mobile_card_fields || {}).primary ? " selected" : ""}>${escapeHtml(h)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="modal-field">
+        <label for="mobile-secondary">Secondary field</label>
+        <select id="mobile-secondary" aria-label="Secondary card field">
+          <option value="">Auto-detect</option>
+          <option value="__none__"${(settingsData.mobile_card_fields || {}).secondary === null ? " selected" : ""}>None</option>
+          ${columnHeaders.map((h) => `<option value="${escapeHtml(h)}"${h === (settingsData.mobile_card_fields || {}).secondary ? " selected" : ""}>${escapeHtml(h)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="modal-field">
+        <label for="mobile-tertiary">Tertiary field (optional)</label>
+        <select id="mobile-tertiary" aria-label="Tertiary card field">
+          <option value="">Auto-detect</option>
+          <option value="__none__"${(settingsData.mobile_card_fields || {}).tertiary === null ? " selected" : ""}>None</option>
+          ${columnHeaders.map((h) => `<option value="${escapeHtml(h)}"${h === (settingsData.mobile_card_fields || {}).tertiary ? " selected" : ""}>${escapeHtml(h)}</option>`).join("")}
+        </select>
+      </div>
     </details>
 
     <details class="format-section">
@@ -1525,6 +1611,16 @@ async function openFormatModal() {
       if (sel.value !== "off") totals[sel.dataset.totalCol] = sel.value;
     });
 
+    const mobilePrimary = el("mobile-primary").value;
+    const mobileSecondary = el("mobile-secondary").value;
+    const mobileTertiary = el("mobile-tertiary").value;
+    const mobileCardFields = {};
+    if (mobilePrimary) mobileCardFields.primary = mobilePrimary;
+    if (mobileSecondary === "__none__") mobileCardFields.secondary = null;
+    else if (mobileSecondary) mobileCardFields.secondary = mobileSecondary;
+    if (mobileTertiary === "__none__") mobileCardFields.tertiary = null;
+    else if (mobileTertiary) mobileCardFields.tertiary = mobileTertiary;
+
     try {
       await api(`/api/formulas?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
         method: "PUT",
@@ -1532,7 +1628,7 @@ async function openFormatModal() {
       });
       await api(`/api/settings?wb=${encodeURIComponent(state.workbook)}&sheet=${encodeURIComponent(state.sheet)}`, {
         method: "PUT",
-        body: { append_direction: state.appendDirection, duplicate_check_columns: dupSelected, totals },
+        body: { append_direction: state.appendDirection, duplicate_check_columns: dupSelected, totals, mobile_card_fields: mobileCardFields },
       });
       closeModal();
       toast("Format saved.", "success");

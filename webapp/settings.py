@@ -187,6 +187,53 @@ def remove_total(workbook: str, sheet: str, name: str) -> None:
             _save(data)
 
 
+def get_mobile_card_fields(workbook: str, sheet: str) -> dict:
+    """Primary / secondary / tertiary column overrides for the mobile card layout.
+
+    Returns e.g. {"primary": "CUSTOMER NAME", "secondary": "AMOUNT"} or
+    an empty dict when nothing has been configured — callers fall back to
+    auto-detection in that case.  Tertiary is optional and may be absent."""
+    with _lock:
+        data = _load()
+        workbook_settings = data.get(workbook) or {}
+        configured = (workbook_settings.get("mobile_card_fields_by_sheet") or {}).get(sheet)
+    if not isinstance(configured, dict):
+        return {}
+    valid_keys = {"primary", "secondary", "tertiary"}
+    out = {}
+    for k, v in configured.items():
+        if k not in valid_keys:
+            continue
+        if k == "tertiary":
+            out[k] = v if isinstance(v, str) else None
+        elif isinstance(v, str):
+            out[k] = v
+    return out
+
+
+def set_mobile_card_fields(workbook: str, sheet: str, fields: dict) -> None:
+    if not isinstance(fields, dict):
+        raise ValueError("mobile_card_fields must be a dict")
+    valid_keys = {"primary", "secondary", "tertiary"}
+    cleaned = {}
+    for k, v in fields.items():
+        if k not in valid_keys:
+            continue
+        if k == "tertiary":
+            cleaned[k] = str(v) if isinstance(v, str) else None
+        elif isinstance(v, str):
+            cleaned[k] = v
+    with _lock:
+        data = _load()
+        workbook_settings = data.setdefault(workbook, {})
+        by_sheet = workbook_settings.setdefault("mobile_card_fields_by_sheet", {})
+        if cleaned:
+            by_sheet[sheet] = cleaned
+        elif sheet in by_sheet:
+            del by_sheet[sheet]
+        _save(data)
+
+
 def get_last_opened() -> dict:
     """Global 'last opened' workbook + sheet pointer (single-user app)."""
     with _lock:
